@@ -447,7 +447,11 @@ const Snd = {
     this.warnGain = c.createGain(); this.warnGain.gain.value = 0;
     wo.connect(this.warnGain).connect(this.master); wo.start();
   },
-  toggle() { this.muted = !this.muted; if (this.master) this.master.gain.value = this.muted ? 0 : 0.55; },
+  toggle() { this.muted = !this.muted; if (this.master) this.master.gain.value = this.muted ? 0 : 0.55; if (this.muted) Radio.stop(); },
+  radioClick(end) {
+    if (end) this.noiseShot(0.22, 2800, 0.09, 'bandpass');
+    else { this.noiseShot(0.07, 2200, 0.14, 'bandpass'); this.tone(1700, 1650, 0.05, 0.04, 'square'); }
+  },
   gun(on) { if (this.c) this.gunGain.gain.setTargetAtTime(on ? 0.8 : 0, this.c.currentTime, on ? 0.01 : 0.04); },
   engine(speed, on) {
     if (!this.c) return; const t = this.c.currentTime;
@@ -485,6 +489,138 @@ const Snd = {
     o.connect(g).connect(this.master); o.start(t); o.stop(t + dur + 0.05);
   }
 };
+
+// =====================================================================
+//  Funkverkehr (englisch, Web Speech API + Untertitel)
+// =====================================================================
+const LEAD = 'HAWG 1-1', WING = 'HAWG 1-2', JTAC = 'WARHAMMER', GPWS = 'GPWS';
+const RADIO_COL = { [LEAD]: '#ffd76a', [WING]: '#8fd0ff', [JTAC]: '#9dff9d', [GPWS]: '#ff5a4a' };
+// Tonhöhe nur leicht verändern – starkes Absenken klingt bei Browser-Stimmen heiser
+const RADIO_PITCH = { [LEAD]: 0.95, [WING]: 1.0, [JTAC]: 0.97, [GPWS]: 0.9 };
+// Bekannte männliche Systemstimmen (macOS, Windows, Chrome, Android)
+const MALE_VOICES = /\b(alex|daniel|arthur|oliver|tom|aaron|evan|nathan|gordon|lee|rishi|thomas|david|mark|guy|george|ryan|christopher|eric|roger|steffan|brian|andrew|james|liam|william|male|man)\b/i;
+const FEMALE_VOICES = /\b(samantha|victoria|karen|moira|tessa|fiona|veena|allison|ava|susan|zoe|kathy|princess|vicki|zira|hazel|serena|kate|nicky|joelle|tara|catherine|martha|sandy|shelley|flo|emma|aria|jenny|libby|sonia|natasha|clara|female|woman)\b/i;
+const OK_MALE_VOICES = /\b(eddy|reed|rocko|aman)\b/i;          // einfache, aber klare Männerstimmen
+const NOVELTY_VOICES = /\b(fred|ralph|grandpa|grandma|junior|albert|bad news|bahh|bells|boing|bubbles|cellos|good news|jester|organ|superstar|trinoids|whisper|wobble|zarvox)\b/i;
+const LINES = {
+  start: [[JTAC, 'Hawg One-One, Warhammer. You are cleared hot. Everything down there is hostile.'],
+          [JTAC, 'Hawg flight, Warhammer. Multiple armor columns in your area. Cleared hot.'],
+          [LEAD, 'Hawg One-One, wheels up. Let\'s go make some noise.']],
+  bomb: [[LEAD, 'Bombs away!'], [LEAD, 'Pickle, pickle. Steel on the way.'], [LEAD, 'Package released.'],
+         [WING, 'Nice drop, lead!'], [LEAD, 'Special delivery, coming down.']],
+  gun: [[LEAD, 'Guns, guns, guns!'], [WING, 'Brrrrt! God, I love that sound.'], [LEAD, 'Strafing!'], [LEAD, 'Eat thirty mike-mike!']],
+  kill: [[LEAD, 'Shack! Direct hit!'], [LEAD, 'Good hits, good hits!'], [LEAD, 'Target destroyed.'],
+         [JTAC, 'Good effect on target.'], [WING, 'Splash! Nice shooting, lead.'], [LEAD, 'Scratch that one.']],
+  kill_tank: [[LEAD, 'Scratch one tank!'], [JTAC, 'Tank destroyed. Good effect.'], [WING, 'Can opener works fine today!']],
+  kill_truck: [[LEAD, 'Truck\'s toast.'], [WING, 'Soft target down.'], [LEAD, 'That one\'s not delivering anything anymore.']],
+  kill_aaa: [[LEAD, 'Triple-A silenced!'], [JTAC, 'Shilka destroyed. Nice work, Hawg.'], [WING, 'That flak gun is history!']],
+  kill_sam: [[LEAD, 'SAM site neutralized!'], [JTAC, 'Good kill on the SAM. Airspace just got safer.'], [WING, 'No more missiles from that one!']],
+  kill_ship: [[LEAD, 'Ship\'s going down!'], [WING, 'Splash one boat!'], [JTAC, 'Vessel destroyed. Outstanding.']],
+  kill_depot: [[LEAD, 'Look at that fireball!'], [JTAC, 'Massive secondaries! Fuel depot destroyed.'], [WING, 'Holy hell, look at it burn!']],
+  building: [[LEAD, 'Building\'s coming down!'], [JTAC, 'Hawg, Warhammer. Watch the collateral, damn it!'], [WING, 'Well, that\'s urban renewal.']],
+  combo: [[WING, 'Lead, you\'re on fire today!'], [JTAC, 'Outstanding, Hawg. Keep it coming!'], [LEAD, 'This is what the Hog was built for!']],
+  flak: [[LEAD, 'Triple-A, triple-A!'], [LEAD, 'Taking fire, taking fire!'], [WING, 'Flak at your six, lead!'], [LEAD, 'Damn, that was close!']],
+  hit: [[LEAD, 'I\'m hit! Son of a bitch!'], [LEAD, 'Damn it, I\'m hit!'], [LEAD, 'Shit! Taking damage!'],
+        [LEAD, 'Hell! That one hurt!'], [WING, 'Lead, you\'re trailing smoke!'], [LEAD, 'Goddamn flak!']],
+  missile: [[WING, 'SAM launch! SAM launch!'], [LEAD, 'Missile in the air! Defending!'], [JTAC, 'Hawg, SAM launch, break, break!']],
+  missile_hit: [[LEAD, 'Holy shit, missile hit! Still flying!'], [LEAD, 'Son of a bitch, took a SAM!'], [WING, 'Lead, you took a missile! Talk to me!']],
+  flare: [[LEAD, 'Flares, flares!'], [LEAD, 'Dropping flares!']],
+  missile_miss: [[LEAD, 'Missile\'s trashed. Ha!'], [LEAD, 'That was too damn close.'], [WING, 'Missile defeated, nice!']],
+  lowhp: [[LEAD, 'Hydraulics are gone. Flying manual reversion!'], [LEAD, 'She\'s falling apart, but she still flies!'], [WING, 'Lead, you look like Swiss cheese!']],
+  repair: [[LEAD, 'Patched up. Back in the fight!'], [WING, 'Good as new, lead. Well, almost.']],
+  terrain: [[GPWS, 'Pull up! Pull up!'], [GPWS, 'Terrain! Terrain! Pull up!']],
+  winchester_bombs: [[LEAD, 'Winchester on bombs.'], [LEAD, 'Out of bombs. Guns only.']],
+  winchester_guns: [[LEAD, 'Winchester on guns! Damn it!']],
+  mayday: [[LEAD, 'Mayday, mayday! Hawg One-One going down!'], [LEAD, 'I\'m going down! Shit, shit, shit!']],
+  crash: [[WING, 'Lead! Lead, pull up! ... Oh God.'], [JTAC, 'Hawg One-One, Warhammer. Do you copy? ... Hawg One-One?']],
+};
+const Radio = {
+  log: [], busyUntil: 0, last: null, voices: [], catT: {},
+  init() {
+    if (!('speechSynthesis' in window)) return;
+    const load = () => { this.voices = speechSynthesis.getVoices().filter(v => /^en/i.test(v.lang)); this.assign(); };
+    load(); speechSynthesis.onvoiceschanged = load;
+  },
+  // Bewertet eine Stimme: männlich und hochwertig bevorzugt, weiblich und Effektstimmen ausgeschlossen
+  scoreVoice(v, preferGB) {
+    const n = v.name;
+    let sc = 0;
+    if (FEMALE_VOICES.test(n)) sc -= 100;
+    if (NOVELTY_VOICES.test(n)) sc -= 50;
+    if (MALE_VOICES.test(n)) sc += 20;
+    else if (OK_MALE_VOICES.test(n)) sc += 10;
+    if (/en[-_]IN/i.test(v.lang)) sc -= 5;
+    if (/enhanced|premium|natural|neural/i.test(n)) sc += 6;
+    if (/google/i.test(n) && !/male/i.test(n)) sc -= 30;          // "Google US English" ist weiblich
+    const gb = /en[-_](GB|AU|IE)/i.test(v.lang), us = /en[-_]US/i.test(v.lang);
+    if (preferGB ? gb : us) sc += 8;
+    return sc;
+  },
+  assign() {
+    this.cast = {};
+    const vs = this.voices; if (!vs.length) return;
+    const used = new Set();
+    const base = v => v.name.split(/[(\-]/)[0].trim().toLowerCase();   // "Daniel (Englisch (UK))" -> "daniel"
+    const pick = (preferGB) => {
+      const ranked = vs.filter(v => !used.has(base(v))).sort((a, b) => this.scoreVoice(b, preferGB) - this.scoreVoice(a, preferGB));
+      const v = ranked[0] && this.scoreVoice(ranked[0], preferGB) > -50 ? ranked[0] : null;
+      if (v) used.add(base(v));
+      return v;
+    };
+    this.cast[LEAD] = pick(false);
+    this.cast[JTAC] = pick(true);
+    this.cast[WING] = pick(false) || this.cast[LEAD];
+    this.cast[GPWS] = this.cast[LEAD];
+    if (!this.cast[JTAC]) this.cast[JTAC] = this.cast[LEAD];
+  },
+  voiceFor(spk) {
+    if (!this.cast || !this.voices.length) this.assign();
+    return this.cast[spk] || null;
+  },
+  // chance: Wahrscheinlichkeit, prio: unterbricht laufenden Funk
+  say(cat, chance = 1, prio = false) {
+    if (state !== 'play' || !plane || plane.demo) return;
+    if (rnd() > chance) return;
+    if (!prio && (time < this.busyUntil || time < (this.catT[cat] || 0))) return;
+    const opts = LINES[cat]; if (!opts) return;
+    this.catT[cat] = time + (prio ? 8 : 18);   // dieselbe Kategorie nicht ständig wiederholen
+    let pick = opts[(rnd() * opts.length) | 0];
+    if (pick === this.last && opts.length > 1) pick = opts[(opts.indexOf(pick) + 1) % opts.length];
+    this.last = pick;
+    const [spk, text] = pick;
+    this.log.push({ spk, text, life: 5.5 });
+    if (this.log.length > 4) this.log.shift();
+    this.busyUntil = time + 4 + text.length * 0.055 + rnd() * 3;   // Funkpause
+    if (Snd.muted || !('speechSynthesis' in window)) return;
+    if (prio) speechSynthesis.cancel();
+    else if (speechSynthesis.speaking || speechSynthesis.pending) return;
+    const u = new SpeechSynthesisUtterance(text.replace(/\.\.\./g, ', '));
+    const v = this.voiceFor(spk); if (v) u.voice = v;
+    u.lang = v ? v.lang : 'en-US';
+    u.rate = spk === GPWS ? 0.95 : 1.08; u.pitch = RADIO_PITCH[spk]; u.volume = 0.9;
+    if (spk !== GPWS) { u.onstart = () => Snd.radioClick(false); u.onend = () => Snd.radioClick(true); }
+    speechSynthesis.speak(u);
+  },
+  stop() { if ('speechSynthesis' in window) speechSynthesis.cancel(); },
+  update(dt) { for (let i = this.log.length - 1; i >= 0; i--) { this.log[i].life -= dt; if (this.log[i].life <= 0) this.log.splice(i, 1); } },
+  draw() {
+    if (!this.log.length) return;
+    ctx.font = '14px ui-monospace,Menlo,monospace'; ctx.textAlign = 'left';
+    let y = H - 60 - (this.log.length - 1) * 22;
+    for (const l of this.log) {
+      const a = Math.min(1, l.life);
+      const label = l.spk + ': ', w = ctx.measureText(label + l.text).width;
+      const x = W / 2 - w / 2;
+      ctx.globalAlpha = a;
+      ctx.fillStyle = 'rgba(8,12,8,0.6)'; ctx.fillRect(x - 10, y - 15, w + 20, 21);
+      ctx.fillStyle = RADIO_COL[l.spk]; ctx.fillText(label, x, y);
+      ctx.fillStyle = '#e8eadf'; ctx.fillText(l.text, x + ctx.measureText(label).width, y);
+      y += 22;
+    }
+    ctx.globalAlpha = 1;
+  }
+};
+Radio.init();
 
 // =====================================================================
 //  Spielzustand
@@ -539,6 +675,8 @@ function startGame() {
   document.getElementById('over').classList.add('hidden');
   newWorld(false);
   state = 'play';
+  Radio.log = []; Radio.busyUntil = 0; Radio.catT = {}; Radio.stop();
+  Radio.say('start', 1, true);
 }
 document.getElementById('startBtn').onclick = startGame;
 document.getElementById('restartBtn').onclick = startGame;
@@ -685,6 +823,8 @@ function killUnit(u) {
   const mult = Math.min(5, 1 + Math.floor((combo - 1) / 2));
   const pts = UDEF[u.type].score * mult;
   score += pts;
+  if (mult >= 3 && combo % 4 === 0) Radio.say('combo', 0.8);
+  else if (rnd() < 0.6) Radio.say('kill_' + u.type, 0.6); else Radio.say('kill', 0.5);
   const g = groundH(u.x, u.y);
   popups.push({ x: u.x, y: u.y, z: g + 30, text: '+' + pts + (mult > 1 ? ' x' + mult : ''), life: 1.4, col: '#ffd76a', size: 16 });
   const big = u.type === 'depot' || u.type === 'ship' ? 2 : u.type === 'sam' ? 1.4 : 1;
@@ -715,7 +855,8 @@ function updateFlak(dt) {
       for (let k = 0; k < 6; k++) addP('flak', f.x + rr(-.2, .2), f.y + rr(-.2, .2), f.z + rr(-6, 6), rr(-.3, .3), rr(-.3, .3), rr(-5, 5), rr(1.2, 2), rr(5, 9));
       addP('fire', f.x, f.y, f.z, 0, 0, 0, 0.15, 10);
       const dd = Math.hypot(plane.x - f.x, plane.y - f.y, (plane.z - f.z) / ZU);
-      if (dd < 1.3) hurt(7 * (1 - dd / 1.3) + 1.5);
+      if (dd < 1.3) { hurt(7 * (1 - dd / 1.3) + 1.5); Radio.say('hit', 0.35); }
+      else if (dd < 3.5) Radio.say('flak', 0.12);
       if (dd < 8) Snd.noiseShot(0.25, 500, 0.25 / (1 + dd * 0.4), 'lowpass');
     }
   }
@@ -723,6 +864,7 @@ function updateFlak(dt) {
 function launchMissile(u) {
   const g = groundH(u.x, u.y);
   missiles.push({ x: u.x, y: u.y, z: g + 12, ang: u.tAng, speed: 3, life: 8.5, target: plane, trailT: 0 });
+  Radio.say('missile', 0.85, time > (Radio.lastMissile || 0) + 5); Radio.lastMissile = time;
   const dd = Math.hypot(plane.x - u.x, plane.y - u.y);
   Snd.noiseShot(1.2, 700, 0.4 / (1 + dd * 0.08));
   for (let k = 0; k < 8; k++) addP('smoke', u.x + rr(-.3, .3), u.y + rr(-.3, .3), g + 4, rr(-.5, .5), rr(-.5, .5), rr(10, 30), rr(1.5, 2.5), rr(8, 12), 220);
@@ -748,11 +890,11 @@ function updateMissiles(dt) {
       const dd = Math.hypot(plane.x - m.x, plane.y - m.y, (plane.z - m.z) / ZU);
       if (dd < 18) warn = true;
       if (dd < 0.65 && !plane.dying) {
-        missiles.splice(i, 1); explosion(m.x, m.y, m.z, 1.1, true); hurt(26); continue;
+        missiles.splice(i, 1); explosion(m.x, m.y, m.z, 1.1, true); hurt(26); if (plane.hp > 0) Radio.say('missile_hit', 1, true); continue;
       }
     } else if (tgt) {
       const dd = Math.hypot(tgt.x - m.x, tgt.y - m.y, (tgt.z - m.z) / ZU);
-      if (dd < 0.6) { missiles.splice(i, 1); explosion(m.x, m.y, m.z, 0.7, true); continue; }
+      if (dd < 0.6) { missiles.splice(i, 1); explosion(m.x, m.y, m.z, 0.7, true); Radio.say('missile_miss', 0.5); continue; }
     }
     if (m.life <= 0 || m.z < groundH(m.x, m.y)) { missiles.splice(i, 1); explosion(m.x, m.y, Math.max(m.z, 0), 0.6, true); }
   }
@@ -761,6 +903,7 @@ function updateMissiles(dt) {
 function dropFlares() {
   if (plane.flares <= 0 || plane.flareCd > 0) return;
   plane.flares--; plane.flareCd = 0.35;
+  Radio.say('flare', missiles.some(m => m.target === plane) ? 0.5 : 0.15);
   for (let s = -1; s <= 1; s += 2) {
     const a = plane.ang + Math.PI + s * 0.9;
     const f = { x: plane.x, y: plane.y, z: plane.z - 6, vx: plane.vx * 0.4 + Math.cos(a) * 3, vy: plane.vy * 0.4 + Math.sin(a) * 3, vz: -20, life: 3 };
@@ -780,6 +923,7 @@ function updateFlares(dt) {
 function dropBomb() {
   if (plane.bombs <= 0 || plane.bombCd > 0) return;
   plane.bombs--; plane.bombCd = 0.45;
+  if (plane.bombs === 0) Radio.say('winchester_bombs', 0.8); else Radio.say('bomb', 0.45);
   const side = plane.bombs % 2 ? 1 : -1;
   const off = side * (0.46 + (plane.bombs >> 1) * 0.16) * planeScale(plane.z);
   const ox = Math.cos(plane.ang + Math.PI / 2) * off, oy = Math.sin(plane.ang + Math.PI / 2) * off;
@@ -820,6 +964,7 @@ function bombImpact(x, y, g) {
 }
 function destroyBuilding(c, i, tx, ty) {
   c.d[i] = 1; c.dirty = true;
+  Radio.say('building', 0.12);
   const pts = 25 * c.f[i];
   score += pts;
   const g = c.h[i];
@@ -832,7 +977,9 @@ function destroyBuilding(c, i, tx, ty) {
 function updateGun(dt) {
   const want = (keys.Space || mouseGun) && !plane.dying && !plane.demo;
   const firing = want && plane.ammo > 0;
-  if (firing && !plane.firing) { plane.brrrtT = 0; }
+  if (firing && !plane.firing) { plane.brrrtT = 0; Radio.say('gun', 0.18); }
+  if (want && plane.ammo < 1 && !plane.winchesterSaid) { plane.winchesterSaid = true; Radio.say('winchester_guns', 1); }
+  if (plane.ammo > 50) plane.winchesterSaid = false;
   plane.firing = firing;
   Snd.gun(firing);
   if (!firing) { plane.ammo = Math.min(MAXAMMO, plane.ammo + 14 * dt); return; }
@@ -919,7 +1066,8 @@ function hurt(dmg) {
   if (plane.dying || plane.demo) return;
   plane.hp -= dmg; hurtT = 0.35; shake = Math.max(shake, 8);
   Snd.noiseShot(0.3, 1500, 0.4);
-  if (plane.hp <= 0) { plane.hp = 0; plane.dying = 3; Snd.gun(false); explosion(plane.x, plane.y, plane.z, 1.3, true); }
+  if (plane.hp <= 0) { plane.hp = 0; Radio.say('mayday', 1, true); plane.dying = 3; Snd.gun(false); explosion(plane.x, plane.y, plane.z, 1.3, true); }
+  else if (plane.hp < 35 && !plane.lowSaid) { plane.lowSaid = true; Radio.say('lowhp', 1, true); }
 }
 
 // Wolken
@@ -978,10 +1126,12 @@ function updateAltitude(p, climb, dt) {
     if (t > 1.6) break;
     if (obstacleH(p.x + ca * dd, p.y + sa * dd) + 10 > p.z + Math.min(0, p.vz) * t) warn = true;
   }
+  if (warn && !p.terrainWarn && time > (p.gpwsVoiceT || 0)) { p.gpwsVoiceT = time + 10; Radio.say('terrain', 1, true); }
   p.terrainWarn = warn;
   if (!p.demo && p.z <= obst + 4) crash(p);
 }
 function crash(p) {
+  Radio.say('crash', 1, true);
   p.hp = 0; p.crashed = true;
   Snd.gun(false);
   const g = groundH(p.x, p.y);
@@ -1057,12 +1207,15 @@ function update(dt) {
     const k = pickups[i]; k.life -= dt;
     if (!p.dying && !p.demo && Math.hypot(k.x - p.x, k.y - p.y) < 1.6) {
       p.hp = Math.min(100, p.hp + 25); pickups.splice(i, 1);
+      if (p.hp >= 35) p.lowSaid = false;
+      Radio.say('repair', 0.8);
       popups.push({ x: p.x, y: p.y, z: p.z + 20, text: '+25 REPARATUR', life: 1.5, col: '#7dff8a', size: 16 });
       Snd.tone(600, 1200, 0.25, 0.2, 'triangle');
     } else if (k.life <= 0) pickups.splice(i, 1);
   }
   comboT -= dt; if (comboT <= 0) combo = 0;
   hurtT = Math.max(0, hurtT - dt);
+  Radio.update(dt);
   hintT = Math.max(0, hintT - dt);
 
   // Kamera
@@ -1744,6 +1897,7 @@ function drawHUD() {
   if (p.ammo < 1 && (keys.Space || mouseGun)) { ctx.font = '20px Impact, sans-serif'; ctx.fillStyle = '#ffb238'; ctx.fillText('MUNITION LEER', W / 2, 104); }
   if (p.terrainWarn && !p.dying && (time * 5 % 1) < 0.6) { ctx.font = '26px Impact, sans-serif'; ctx.fillStyle = '#ff3b2f'; ctx.fillText('BODENNÄHE – HOCHZIEHEN!', W / 2, 160); }
   if (p.hp < 25 && (time * 2 % 1) < 0.5) { ctx.font = '20px Impact, sans-serif'; ctx.fillStyle = '#ff6b5a'; ctx.fillText('SCHWERE SCHÄDEN', W / 2, 130); }
+  Radio.draw();
   if (hintT > 0) {
     ctx.globalAlpha = Math.min(1, hintT / 2);
     ctx.font = '14px ui-monospace,Menlo,monospace'; ctx.fillStyle = '#e8eadf';
@@ -1771,13 +1925,13 @@ addEventListener('keydown', e => {
   keys[e.code] = true;
   if (e.code === 'KeyM') Snd.toggle();
   if (e.code === 'KeyP' || e.code === 'Escape') {
-    if (state === 'play') { state = 'pause'; Snd.gun(false); Snd.warn(false); Snd.engine(0, false); }
+    if (state === 'play') { state = 'pause'; Snd.gun(false); Snd.warn(false); Snd.engine(0, false); Radio.stop(); }
     else if (state === 'pause') state = 'play';
   }
   if (e.code === 'Enter' && state === 'title') startGame();
 });
 addEventListener('keyup', e => { keys[e.code] = false; });
-addEventListener('blur', () => { for (const k in keys) keys[k] = false; mouseGun = false; if (state === 'play') { state = 'pause'; Snd.gun(false); Snd.warn(false); Snd.engine(0, false); } });
+addEventListener('blur', () => { for (const k in keys) keys[k] = false; mouseGun = false; if (state === 'play') { state = 'pause'; Snd.gun(false); Snd.warn(false); Snd.engine(0, false); Radio.stop(); } });
 canvas.addEventListener('mousedown', e => { if (state !== 'play') return; if (e.button === 0) mouseGun = true; if (e.button === 2) dropBomb(); });
 addEventListener('mouseup', e => { if (e.button === 0) mouseGun = false; });
 canvas.addEventListener('contextmenu', e => e.preventDefault());
