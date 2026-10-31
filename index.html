@@ -48,6 +48,7 @@
       Der kleine Kreis vor dir zeigt, wo die Kanone trifft, das Fadenkreuz dahinter den Bombeneinschlag.<br>
       <b style="color:#ff6b5a">SAM-Stellungen</b> feuern Lenkraketen – wirf Flares und kurve hart. Flak-Panzer schießen Sperrfeuer.<br>
       <b style="color:#50e6ff">Radarstationen</b> erweitern Reichweite und Feuerrate nahegelegener SAMs. Fregatten haben Flak und Raketen.<br>
+      <b style="color:#ff8a2a">Vulkane</b> brechen gelegentlich aus – ihre Lavabomben treffen auch dich.<br>
       Zerstörte LKWs lassen manchmal <b style="color:#7dff8a">Reparaturkisten</b> fallen. Überfliege sie.
     </div>
     <button id="startBtn">STARTEN</button>
@@ -69,18 +70,21 @@
 // =====================================================================
 const TW = 64, TH = 32, HW = TW / 2, HH = TH / 2;
 const CH = 12;                      // Chunkgröße in Tiles
-const MARGIN = 170;                 // Platz nach oben für Berge/Gebäude im Chunk-Canvas
+const MARGIN = 312;                 // Platz nach oben für Berge/Gebäude im Chunk-Canvas
 const CW_PX = CH * TW, CH_PX = CH * TH + MARGIN + 8;
 const MAX_CANVASES = 48;
 const ZU = 32;                      // px Höhe pro Tile-Einheit
 const PZ = 215;                     // Start-Flughöhe in px
 const MINCLR = 38;                  // Mindestabstand über Gelände/Gebäuden (px)
-const MAXZ = 360;                   // maximale Flughöhe (px)
+const MAXZ = 440;                   // maximale Flughöhe (px), über den höchsten Gipfeln
 const GRAV = 220;                   // Bombengravitation px/s²
 const MAXAMMO = 1174, MAXBOMBS = 6, MAXFLARES = 24;
 const TAU = Math.PI * 2;
 
 const DEEP = 0, WATER = 1, SAND = 2, GRASS = 3, FOREST = 4, DESERT = 5, ROCK = 6, SNOW = 7, ROAD = 8, CITY = 9, PARK = 10;
+const MESA = 11, CANYON = 12, RIVER = 13;   // Canyonlands: Plateau/Fels, Canyonboden, Fluss
+const STREAM = 14, VOLCANO = 15, LAVA = 16, ASH = 17;   // Fluss im Grasland, Vulkangestein, Lava, Asche
+const ALPT = 0.56, CANYT = 0.5;             // Schwellen für Hochgebirge und Canyonlands
 const SEA = 0.465, ROCKT = 0.625, SNOWT = 0.665, CITYT = 0.665, DESERTT = 0.42, FORESTT = 0.575;
 
 const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
@@ -118,20 +122,138 @@ const urban = (x, y) => fbm(x / 30, y / 30, SEED + 555, 3);
 function heightOf(e) {
   if (e < SEA) return 0;
   const h = (e - SEA) * 220 + Math.max(0, e - 0.58) * 600;
-  return Math.min(150, Math.round(h / 4) * 4);
+  const soft = h <= 210 ? h : 210 + (h - 210) * 0.7;       // hohe Gipfel weich abflachen statt abschneiden
+  return Math.min(296, Math.round(soft / 4) * 4);
 }
+// Grat-Rauschen für Gebirgsketten: scharfe Kämme statt runder Hügel
+function ridged(x, y) {
+  let sum = 0, amp = 1, f = 1, n = 0;
+  for (let i = 0; i < 4; i++) { const v = 1 - Math.abs(2 * vnoise(x * f, y * f, SEED + 300 + i * 17) - 1); sum += v * v * amp; n += amp; amp *= 0.5; f *= 2.1; }
+  return sum / n;
+}
+// Canyonlands: Plateau mit gewundenen, breiten Schluchten; null wenn keine Canyonregion
+// Kenngrößen der Canyonlands an einer Stelle (null außerhalb)
+function canyonParams(x, y, e, m) {
+  if (e < SEA + 0.03 || e > ROCKT || m > DESERTT + 0.05) return null;
+  const cm = fbm(x / 230, y / 230, SEED + 71, 2);
+  if (cm < CANYT) return null;
+  const f = clamp((cm - CANYT) / 0.05, 0, 1) * clamp((DESERTT + 0.05 - m) / 0.04, 0, 1);
+  const plateau = 72 + Math.floor(fbm(x / 45, y / 45, SEED + 81, 2) * 4) * 14;
+  const H = Math.round(lerp(heightOf(e), plateau, f) / 4) * 4;
+  return { f, H, dist: Math.abs(canyonNoise(x, y) - 0.5), cw: 0.04 * f };
+}
+// Hohe Brücke nur, wenn die Rasterlinie den Canyon von Plateau zu Plateau quert (mind. 4 Tiles).
+// Liefert die Fahrbahnhöhe (höheres Plateau + 2) oder -1. Alle Tiles einer Querung finden dieselben Enden.
+function canyonBridgeDeck(x, y, dir) {
+  const dx = dir === 1 ? 1 : 0, dy = dir === 2 ? 1 : 0;
+  let ends = [];
+  for (const sgn of [-1, 1]) {
+    let found = -1;
+    for (let k = 1; k <= 26; k++) {
+      const qx = x + dx * k * sgn, qy = y + dy * k * sgn;
+      const p = canyonParams(qx, qy, elev(qx, qy), moist(qx, qy));
+      if (!p || p.f < 0.35) return -1;                          // Linie verlässt die Canyonlands
+      if (p.dist >= p.cw + 0.01) { found = k; ends.push(p.H); break; }
+    }
+    if (found < 0) return -1;
+    ends.push(found);
+  }
+  if (ends[1] + ends[3] - 1 < 4) return -1;
+  return Math.max(ends[0], ends[2]) + 2;
+}
+function canyonTile(x, y, e, m) {
+  const cp = canyonParams(x, y, e, m);
+  if (!cp) return null;
+  const { f, H } = cp;
+  if (f < 0.35) return { t: DESERT, h: H, f: 0, e, m };
+  const dist = cp.dist, cw = cp.cw;
+  // hohe Stahlbrücken über den Canyon auf Plateauhöhe
+  let cbr = dist < cw + 0.01 ? bridgeDir(x, y, 23, canyonNoise, false) : 0, cbz = 0;
+  if (cbr) { cbz = canyonBridgeDeck(x, y, cbr); if (cbz < 0) cbr = 0; }
+  if (dist < cw) {
+    if (dist < 0.007) return { t: RIVER, h: 6, f: 0, e, m, br: cbr, bz: cbz };
+    if (!cbr && dist > 0.014 && hash2(x, y, SEED + 95) < 0.012) return { t: MESA, h: H, f: 0, e, m };   // Felsnadel
+    return { t: CANYON, h: 14, f: 0, e, m, br: cbr, bz: cbz };
+  }
+  if (dist < cw + 0.01) return { t: MESA, h: Math.round(H * 0.55 / 4) * 4, f: 0, e, m, br: cbr, bz: cbz };   // Stufe in der Wand
+  return { t: MESA, h: H, f: 0, e, m };
+}
+
+// Vulkane: höchstens einer pro Rasterzelle, mit Abstand zum Zellrand (daher genügt die eigene Zelle)
+const VCELL = 150;
+function volcanoInCell(cx, cy) {
+  if (hash2(cx, cy, SEED + 500) > 0.42) return null;
+  const R = 9 + hash2(cx, cy, SEED + 503) * 6;
+  return {
+    x: (cx + 0.2 + hash2(cx, cy, SEED + 501) * 0.6) * VCELL, y: (cy + 0.2 + hash2(cx, cy, SEED + 502) * 0.6) * VCELL,
+    R, H: 200 + hash2(cx, cy, SEED + 504) * 70, id: cx * 7919 + cy * 104729
+  };
+}
+const volcanoAt = (x, y) => volcanoInCell(Math.floor(x / VCELL), Math.floor(y / VCELL));
+const CRATER_Q = 0.76;   // Kraterrand bei 24 % des Radius
+function volcanoRimZ(v) { return Math.round(v.H * Math.pow(CRATER_Q, 1.15) / 4) * 4; }
+function volcanoTile(x, y, d, v, e, m) {
+  const base = e < SEA ? 0 : heightOf(e);
+  if (d >= v.R) {
+    // Ascheebene am Fuß; im Meer schwarzer Strand der Vulkaninsel
+    if (e < SEA - 0.03 && d > v.R * 1.12) return null;
+    return { t: ASH, h: Math.max(base, 4), f: 0, e: Math.max(e, SEA), m };
+  }
+  const q = 1 - d / v.R;
+  if (q > CRATER_Q) {
+    const rim = volcanoRimZ(v);
+    if (q > 0.86) return { t: LAVA, h: rim - 36, f: 0, e, m };             // Lavasee im Krater
+    return { t: VOLCANO, h: rim + 4, f: 0, e, m };                         // Kraterrand
+  }
+  const h = Math.round(Math.max(base, v.H * Math.pow(q, 1.15) + hash2(x, y, SEED + 505) * 8) / 4) * 4;
+  const ang = Math.atan2(y + 0.5 - v.y, x + 0.5 - v.x);
+  const flow = Math.sin(ang * 3 + v.id + fbm(x / 9, y / 9, SEED + 510, 2) * 3);
+  return { t: flow > 0.94 && q > 0.12 ? LAVA : VOLCANO, h, f: 0, e, m };   // Lavaströme an den Flanken
+}
+const isWaterT = t => t === DEEP || t === WATER || t === RIVER || t === STREAM;
 
 // Tile-Info für eine Weltkoordinate
 function tileInfo(x, y) {
-  const e = elev(x, y), m = moist(x, y);
+  let e = elev(x, y);
+  const m = moist(x, y);
+  // Hochgebirge: großräumige Zonen mit Gebirgsketten aus scharfen Graten
+  if (e > SEA + 0.005) {
+    const a = fbm(x / 280, y / 280, SEED + 31, 3);
+    if (a > ALPT) {
+      // scharfe Grate und tiefe Täler: Grat-Rauschen hoch potenziert
+      const r = ridged(x / 38, y / 38);
+      e += clamp((a - ALPT) * 9, 0, 1) * 0.42 * Math.pow(r, 2.4) * clamp((e - SEA) / 0.08, 0, 1);
+    }
+  }
+  const vol = volcanoAt(x, y);
+  if (vol) {
+    const d = Math.hypot(x + 0.5 - vol.x, y + 0.5 - vol.y);
+    if (d < vol.R * 1.5) { const vt = volcanoTile(x, y, d, vol, e, m); if (vt) return vt; }
+  }
+  const cyn = canyonTile(x, y, e, m);
+  if (cyn) return cyn;
   let t, h = heightOf(e), f = 0;
   if (e < SEA) { t = e < SEA - 0.05 ? DEEP : WATER; h = 0; }
   else if (e < SEA + 0.012) t = SAND;
-  else if (e > SNOWT) t = SNOW;
+  else if (h >= 132 + hash2(x, y, SEED + 7) * 16) t = SNOW;   // Schneegrenze nach echter Höhe
   else if (e > ROCKT) t = ROCK;
   else {
     const u = urban(x, y);
-    if (u > CITYT && e < ROCKT - 0.04 && e > SEA + 0.016) {
+    // gewundene Flüsse durch Grasland, Wald und Städte (nicht durch Wüste)
+    const rv = m >= DESERTT && e < ROCKT - 0.01 ? Math.abs(fbm(x / 110, y / 110, SEED + 121, 3) - 0.5) : 1;
+    const inCity = u > CITYT && e < ROCKT - 0.04 && e > SEA + 0.016;
+    if (rv < 0.0095) {
+      const hb = Math.round(h / 8) * 8;
+      t = STREAM; h = Math.max(2, (inCity ? hb : h) - 6);
+      const dir = inCity ? bridgeDir(x, y, 7, streamNoise, true) : bridgeDir(x, y, 24, streamNoise, false);
+      if (dir) return { t, h, f, e, m, br: dir, bz: Math.max(hb, h + 6) + 4 };
+    }
+    else if (rv < 0.0135) {
+      // Ufer: in der Stadt Grünstreifen, Straßen laufen bis an die Brücke durch
+      t = inCity ? (mod(x, 7) === 0 || mod(y, 7) === 0 ? ROAD : PARK) : SAND;
+      if (inCity) h = Math.round(h / 8) * 8;
+    }
+    else if (inCity) {
       h = Math.round(h / 8) * 8;
       const rx = mod(x, 7), ry = mod(y, 7);
       if (rx === 0 || ry === 0) t = ROAD;
@@ -142,8 +264,7 @@ function tileInfo(x, y) {
       } else t = PARK;
     }
     else if (m < DESERTT) t = DESERT;
-    else if (m > FORESTT) t = FOREST;
-    else t = GRASS;
+    else t = m > FORESTT ? FOREST : GRASS;
   }
   return { t, h, f, e, m };
 }
@@ -169,7 +290,8 @@ function genChunk(cx, cy) {
   const N = CH + 2, n = CH * CH;
   const c = {
     cx, cy, t: new Uint8Array(n), h: new Float32Array(n), f: new Uint8Array(n), e: new Float32Array(n), m: new Float32Array(n),
-    d: new Uint8Array(n), dmg: new Float32Array(n), hn: new Float32Array(N * N), canvas: null, dirty: true, used: 0
+    d: new Uint8Array(n), dmg: new Float32Array(n), hn: new Float32Array(N * N), canvas: null, dirty: true, used: 0,
+    br: new Uint8Array(n), bz: new Float32Array(n)
   };
   for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
     const info = tileInfo(cx * CH + i - 1, cy * CH + j - 1);
@@ -177,6 +299,7 @@ function genChunk(cx, cy) {
     if (i >= 1 && i <= CH && j >= 1 && j <= CH) {
       const k = (j - 1) * CH + (i - 1);
       c.t[k] = info.t; c.h[k] = info.h; c.f[k] = info.f; c.e[k] = info.e; c.m[k] = info.m;
+      if (info.br) { c.br[k] = info.br; c.bz[k] = info.bz; }
     }
   }
   return c;
@@ -196,7 +319,10 @@ function groundH(x, y) { locate(x, y); return LC.h[LI]; }
 const COL = [];
 COL[SAND] = [222, 204, 150]; COL[GRASS] = [104, 156, 68]; COL[FOREST] = [62, 116, 50]; COL[DESERT] = [216, 180, 112];
 COL[ROCK] = [126, 116, 106]; COL[SNOW] = [234, 238, 244]; COL[ROAD] = [72, 72, 76]; COL[CITY] = [158, 156, 148]; COL[PARK] = [96, 150, 66];
+COL[MESA] = [186, 100, 60]; COL[CANYON] = [206, 152, 100]; COL[RIVER] = [58, 122, 150];
+COL[STREAM] = [62, 128, 158]; COL[VOLCANO] = [66, 58, 56]; COL[LAVA] = [255, 118, 34]; COL[ASH] = [98, 92, 88];
 const DIRT = [118, 92, 66];
+const STRATA = [[196, 116, 70], [166, 82, 50], [214, 148, 94], [150, 70, 44], [188, 104, 62]];
 const BCOLS = [[198, 190, 172], [170, 172, 176], [216, 208, 192], [150, 140, 128], [186, 118, 90], [124, 134, 148]];
 const BCOLS_DES = [[218, 196, 156], [206, 180, 140], [230, 216, 186], [190, 160, 120]];
 const rgb = (c, k) => `rgb(${clamp(c[0] * k | 0, 0, 255)},${clamp(c[1] * k | 0, 0, 255)},${clamp(c[2] * k | 0, 0, 255)})`;
@@ -237,7 +363,8 @@ function drawTile(g, c, lx, ly) {
     base = COL[t];
     if (t === GRASS || t === PARK) base = mix(base, [150, 160, 80], clamp((0.52 - m) * 4, 0, 0.6));
     if (t === FOREST && e > 0.57) base = mix(base, [40, 80, 46], 0.5);
-    if (t === ROCK && e > SNOWT - 0.015) base = mix(base, COL[SNOW], 0.45);
+    if (t === ROCK && h > 112) base = mix(base, COL[SNOW], 0.45);
+    if (t === LAVA) base = mix([255, 90, 20], [255, 190, 60], r2 * 0.7);
     if (dead && t !== CITY) base = mix(base, [44, 36, 30], 0.7);
     if (dead && t === CITY) base = [92, 88, 82];
   }
@@ -247,11 +374,28 @@ function drawTile(g, c, lx, ly) {
   const top = [ox, oy - h], right = [ox + HW, oy + HH - h], bottom = [ox, oy + TH - h], left = [ox - HW, oy + HH - h];
   // Seitenflächen
   if (h > 0) {
-    const sc = (t >= ROAD) ? [120, 118, 112] : (t === SNOW ? [150, 150, 160] : (t === ROCK ? [100, 90, 82] : mix(base, DIRT, 0.6)));
-    g.fillStyle = rgb(sc, 0.78);
-    quad(g, left, bottom, [ox, oy + TH], [ox - HW, oy + HH]); g.fill();
-    g.fillStyle = rgb(sc, 0.58);
-    quad(g, bottom, right, [ox + HW, oy + HH], [ox, oy + TH]); g.fill();
+    if (t === MESA || t === CANYON || t === RIVER) {
+      // farbige Gesteinsschichten, an der absoluten Höhe ausgerichtet
+      for (let z = 0; z < h; z += 10) {
+        const z1 = Math.min(h, z + 10), c = STRATA[Math.floor(z / 10) % STRATA.length];
+        g.fillStyle = rgb(c, 0.8);
+        quad(g, [ox - HW, oy + HH - z1], [ox, oy + TH - z1], [ox, oy + TH - z], [ox - HW, oy + HH - z]); g.fill();
+        g.fillStyle = rgb(c, 0.6);
+        quad(g, [ox, oy + TH - z1], [ox + HW, oy + HH - z1], [ox + HW, oy + HH - z], [ox, oy + TH - z]); g.fill();
+      }
+    } else {
+      const sc = (t === ROAD || t === CITY || t === PARK) ? [120, 118, 112] : t === SNOW ? [150, 150, 160] : t === ROCK ? [100, 90, 82]
+        : t === VOLCANO || t === ASH ? [52, 46, 44] : t === LAVA ? [120, 34, 14] : mix(base, DIRT, 0.6);
+      g.fillStyle = rgb(sc, 0.78);
+      quad(g, left, bottom, [ox, oy + TH], [ox - HW, oy + HH]); g.fill();
+      g.fillStyle = rgb(sc, 0.58);
+      quad(g, bottom, right, [ox + HW, oy + HH], [ox, oy + TH]); g.fill();
+      if ((t === ROCK || t === SNOW) && h > 60) {
+        // Felsrinnen an hohen Bergflanken
+        g.strokeStyle = 'rgba(40,34,30,0.25)'; g.lineWidth = 1;
+        g.beginPath(); const xr = ox - HW * (0.3 + r2 * 0.5); g.moveTo(xr, oy + HH - h + 6); g.lineTo(xr + 2, oy + HH - h * 0.4); g.stroke();
+      }
+    }
   }
   // Oberfläche
   const col = rgb(base, k);
@@ -299,13 +443,39 @@ function drawTile(g, c, lx, ly) {
         g.fillStyle = '#2a201a'; for (let j = 0; j < 3; j++) { const a = P(hash2(wx, wy, j) * 0.8 + 0.1, hash2(wy, wx, j) * 0.8 + 0.1); g.fillRect(a[0] - 1, a[1] - 5, 2, 5); }
       }
       break;
+    case MESA:
+      if (!dead && r1 < 0.18) { g.fillStyle = '#5d6b3a'; const a = P(0.2 + r2 * 0.6, 0.2 + r3 * 0.6); g.beginPath(); g.ellipse(a[0], a[1] - 2, 4, 2.5, 0, 0, TAU); g.fill(); }
+      else if (r1 < 0.3) { g.fillStyle = 'rgba(120,60,36,0.5)'; const a = P(r2, r3); g.fillRect(a[0] - 3, a[1], 6, 2); }
+      break;
+    case CANYON:
+      if (r1 < 0.2) { g.fillStyle = '#9c6a48'; const a = P(0.2 + r2 * 0.6, 0.2 + r3 * 0.6); g.beginPath(); g.ellipse(a[0], a[1], 3 + r2 * 3, 2, 0, 0, TAU); g.fill(); }
+      else if (r1 < 0.25 && !dead) cactus(g, ...P(0.3 + r2 * 0.4, 0.3 + r3 * 0.4));
+      break;
+    case VOLCANO:
+      if (r1 < 0.25) { g.fillStyle = '#3a3230'; const a = P(0.2 + r2 * 0.6, 0.2 + r3 * 0.6); g.beginPath(); g.moveTo(a[0] - 4, a[1]); g.lineTo(a[0], a[1] - 4); g.lineTo(a[0] + 4, a[1]); g.closePath(); g.fill(); }
+      else if (r1 < 0.3) { g.fillStyle = 'rgba(255,90,20,0.6)'; const a = P(r2, r3); g.fillRect(a[0] - 2, a[1], 4, 1.5); }
+      break;
+    case LAVA:
+      g.strokeStyle = 'rgba(255,240,150,0.8)'; g.lineWidth = 1.2;
+      { const a = P(0.15 + r2 * 0.3, 0.3 + r3 * 0.4); g.beginPath(); g.moveTo(a[0] - 8, a[1]); g.lineTo(a[0] - 2, a[1] + 2); g.lineTo(a[0] + 4, a[1] - 1); g.lineTo(a[0] + 10, a[1] + 1); g.stroke(); }
+      g.fillStyle = 'rgba(60,20,10,0.5)'; { const b = P(0.5 + r3 * 0.3, 0.2 + r1 * 0.5); g.beginPath(); g.ellipse(b[0], b[1], 4, 2, 0, 0, TAU); g.fill(); }
+      break;
+    case ASH:
+      if (r1 < 0.08) { g.fillStyle = '#2e2622'; const a = P(0.3 + r2 * 0.4, 0.3 + r3 * 0.4); g.fillRect(a[0] - 1, a[1] - 9, 2, 9); g.fillRect(a[0] - 4, a[1] - 7, 3, 1.2); }
+      else if (r1 < 0.3) { g.fillStyle = 'rgba(60,54,50,0.5)'; const a = P(r2, r3); g.fillRect(a[0], a[1], 3, 1.5); }
+      break;
+    case STREAM:
+    case RIVER:
+      g.strokeStyle = 'rgba(220,240,255,0.25)'; g.lineWidth = 1.2;
+      { const a = P(0.2 + r2 * 0.4, 0.3 + r3 * 0.4); g.beginPath(); g.moveTo(a[0] - 6, a[1]); g.quadraticCurveTo(a[0], a[1] - 2, a[0] + 6, a[1]); g.stroke(); }
+      break;
     case ROCK: case SNOW:
       if (r1 < 0.3) {
         const a = P(0.3 + r2 * 0.4, 0.3 + r3 * 0.4);
         g.fillStyle = t === SNOW ? '#c4ccd6' : '#6f665c';
         g.beginPath(); g.moveTo(a[0] - 6, a[1]); g.lineTo(a[0] - 1, a[1] - 7); g.lineTo(a[0] + 5, a[1]); g.closePath(); g.fill();
       }
-      if (t === ROCK && r2 < 0.12 && e < SNOWT) tree(g, ...P(0.5, 0.5), 0.7, [44, 84, 52], true);
+      if (t === ROCK && r2 < 0.12 && h < 90) tree(g, ...P(0.5, 0.5), 0.7, [44, 84, 52], true);
       break;
     case ROAD: {
       const rx = mod(wx, 7) === 0, ry = mod(wy, 7) === 0;
@@ -321,7 +491,73 @@ function drawTile(g, c, lx, ly) {
       else building(g, P, c.f[i], wx, wy, m < DESERTT + 0.03);
       break;
   }
+  if (c.br[i]) {
+    // Brückenende? (Nachbar in Längsrichtung ohne Brücke) -> Stützpfeiler
+    const dx = c.br[i] === 1 ? 1 : 0, dy = c.br[i] === 2 ? 1 : 0;
+    locate(wx + dx, wy + dy); const endA = !LC.br[LI];
+    locate(wx - dx, wy - dy); const endB = !LC.br[LI];
+    drawBridge(g, ox, oy, c.br[i], c.bz[i], h, dead, wx, wy, endA || endB);
+  }
 }
+// Brücke auf einem Tile. dir 1 = verläuft entlang x, 2 = entlang y. bz = Fahrbahnhöhe (absolut, px)
+function drawBridge(g, ox, oy, dir, bz, h, broken, wx, wy, isEnd) {
+  const high = bz - h > 30;
+  // (along, across, z) -> Bildschirm
+  const Q = (a, c, z) => { const u = dir === 1 ? a : c, v = dir === 1 ? c : a; return [ox + (u - v) * HW, oy + (u + v) * HH - z]; };
+  const along = dir === 1 ? wx : wy;
+  const box = (a0, a1, c0, c1, z0, z1, col) => {
+    // sichtbare Seiten: across = c1 und along = a1 zeigen zum Betrachter
+    g.fillStyle = rgb(col, 0.62); quad(g, Q(a0, c1, z1), Q(a1, c1, z1), Q(a1, c1, z0), Q(a0, c1, z0)); g.fill();
+    g.fillStyle = rgb(col, 0.78); quad(g, Q(a1, c0, z1), Q(a1, c1, z1), Q(a1, c1, z0), Q(a1, c0, z0)); g.fill();
+    g.fillStyle = rgb(col, 1); quad(g, Q(a0, c0, z1), Q(a1, c0, z1), Q(a1, c1, z1), Q(a0, c1, z1)); g.fill();
+  };
+  const concrete = [168, 164, 156];
+  // Pfeiler: niedrige Brücke in jeder Tile-Mitte, hohe Brücke jede dritte Tile
+  if (!high || isEnd || mod(along, 3) === 0) box(0.42, 0.58, 0.36, 0.64, h - 2, bz - 4, high ? [150, 146, 138] : concrete);
+  if (broken) {
+    g.fillStyle = '#4a4540';
+    for (let k = 0; k < 4; k++) { const p = Q(hash2(wx, wy, k + 140), 0.3 + hash2(wx, wy, k + 150) * 0.4, h + 1); g.fillRect(p[0] - 3, p[1] - 2, 6, 3); }
+    return;
+  }
+  const steel = [150, 62, 42];
+  const truss = (c) => {
+    g.strokeStyle = rgb(steel, c > 0.5 ? 0.85 : 0.6); g.lineWidth = 1.6;
+    g.beginPath();
+    const b0 = Q(0, c, bz), b1 = Q(1, c, bz), t0 = Q(0, c, bz + 12), t1 = Q(1, c, bz + 12);
+    g.moveTo(...b0); g.lineTo(...t0); g.lineTo(...t1); g.lineTo(...b1);
+    if (mod(along, 2) === 0) { g.moveTo(...b0); g.lineTo(...t1); } else { g.moveTo(...t0); g.lineTo(...b1); }
+    g.stroke();
+  };
+  if (high) truss(0.2);
+  // Fahrbahn
+  box(0, 1, 0.2, 0.8, bz - 4, bz, [90, 90, 94]);
+  g.fillStyle = '#4c4c50'; quad(g, Q(0, 0.24, bz), Q(1, 0.24, bz), Q(1, 0.76, bz), Q(0, 0.76, bz)); g.fill();
+  g.strokeStyle = 'rgba(235,225,170,0.7)'; g.lineWidth = 1;
+  g.beginPath(); g.moveTo(...Q(0.2, 0.5, bz)); g.lineTo(...Q(0.6, 0.5, bz)); g.stroke();
+  if (high) truss(0.8);
+  else {
+    // Geländer
+    g.strokeStyle = 'rgba(210,210,205,0.9)'; g.lineWidth = 1.2;
+    for (const c of [0.21, 0.79]) { g.beginPath(); g.moveTo(...Q(0, c, bz + 3)); g.lineTo(...Q(1, c, bz + 3)); g.stroke(); }
+  }
+}
+// Fahrbahnhöhe einer intakten Brücke an der Position, sonst -1
+function bridgeDeck(x, y) { locate(x, y); return LC.br[LI] && !LC.d[LI] ? LC.bz[LI] : -1; }
+// Oberfläche für Fahrzeuge: Brücke, sonst Boden
+function surfaceH(x, y) { locate(x, y); return LC.br[LI] && !LC.d[LI] && LC.bz[LI] - LC.h[LI] < 30 ? LC.bz[LI] : LC.h[LI]; }
+function isRoadAt(x, y) { locate(x, y); return LC.t[LI] === ROAD || (LC.br[LI] && !LC.d[LI] && LC.bz[LI] - LC.h[LI] < 30); }
+// Richtung einer Brücke auf Rasterlinie, quer zum Gewässer (Gradient des Rauschens)
+function bridgeDir(x, y, K, noise, city) {
+  const onX = mod(x, K) === 0, onY = mod(y, K) === 0;
+  if (!onX && !onY) return 0;
+  const gx = noise(x + 1, y) - noise(x - 1, y), gy = noise(x, y + 1) - noise(x, y - 1);
+  if (onX && Math.abs(gy) >= Math.abs(gx) * 0.45) return 2;
+  if (onY && Math.abs(gx) >= Math.abs(gy) * 0.45) return 1;
+  return city ? (onX ? 2 : 1) : 0;
+}
+const streamNoise = (x, y) => fbm(x / 110, y / 110, SEED + 121, 3);
+const canyonNoise = (x, y) => fbm(x / 75, y / 75, SEED + 91, 3);
+
 
 function tree(g, x, y, s, col, conifer) {
   g.fillStyle = 'rgba(0,0,0,0.22)';
@@ -536,6 +772,9 @@ const LINES = {
   repair: [[LEAD, 'Patched up. Back in the fight!'], [WING, 'Good as new, lead. Well, almost.']],
   terrain: [[GPWS, 'Pull up! Pull up!'], [GPWS, 'Terrain! Terrain! Pull up!']],
   winchester_bombs: [[LEAD, 'Winchester on bombs.'], [LEAD, 'Out of bombs. Guns only.']],
+  volcano: [[WING, 'Volcano\'s erupting! Watch the lava bombs!'], [LEAD, 'Holy hell, the mountain just blew!'], [JTAC, 'Hawg, volcanic eruption in your area. Stay clear of the crater.']],
+  lava_hit: [[LEAD, 'Damn it, hit by a lava bomb!'], [LEAD, 'Son of a bitch, the volcano got me!']],
+  bridge: [[LEAD, 'Bridge is down!'], [JTAC, 'Good hit on the bridge. That\'ll slow them down.'], [WING, 'Nobody\'s crossing there anymore.']],
   winchester_guns: [[LEAD, 'Winchester on guns! Damn it!']],
   mayday: [[LEAD, 'Mayday, mayday! Hawg One-One going down!'], [LEAD, 'I\'m going down! Shit, shit, shit!']],
   crash: [[WING, 'Lead! Lead, pull up! ... Oh God.'], [JTAC, 'Hawg One-One, Warhammer. Do you copy? ... Hawg One-One?']],
@@ -658,6 +897,7 @@ function newWorld(demo) {
   chunks = new Map(); lastCK = NaN; lastC = null;
   for (const c of rendered) { if (c.canvas) canvasPool.push(c.canvas); c.canvas = null; }
   rendered.clear();
+  lavaBombs = []; volcanoState = new Map(); eruptWarnT = 0;
   units = []; missiles = []; flak = []; bombs = []; particles = []; decals = []; tracers = []; popups = []; flares = []; pickups = []; clouds = [];
   frameNo = 0; time = 0; score = 0; kills = 0; combo = 0; comboT = 0; traveled = 0; hurtT = 0; hintT = demo ? 0 : 14;
   // Startpunkt über Land suchen
@@ -666,7 +906,8 @@ function newWorld(demo) {
   for (let r = 0; r < 400 && !found; r += 3) for (let a = 0; a < 8 && !found; a++) {
     const x = Math.cos(a / 8 * TAU) * r, y = Math.sin(a / 8 * TAU) * r;
     const info = tileInfo(Math.floor(x), Math.floor(y));
-    if (info.t === GRASS || info.t === DESERT || info.t === FOREST) { startX = x; startY = y; found = true; }
+    const v = volcanoAt(x, y);
+    if ((info.t === GRASS || info.t === DESERT || info.t === FOREST) && (!v || Math.hypot(v.x - x, v.y - y) > 45)) { startX = x; startY = y; found = true; }
   }
   plane = {
     x: startX, y: startY, z: PZ, ang: -Math.PI * 0.75 + 0.3, speed: 6.5, bank: 0, vx: 0, vy: 0,
@@ -720,7 +961,7 @@ function spawnUnits(c) {
       } else if (t === WATER && r < 0.1) addUnit('boat', x, y);
       continue;
     }
-    if (t === CITY) continue;
+    if (t === CITY || t === RIVER || t === STREAM || t === LAVA) continue;
     if (t === ROAD) {
       if (r < 0.55) { addUnit('truck', x, y); if (rnd() < 0.5) addUnit('truck', x, y); }
       else if (r < 0.82) addUnit('aaa', x, y); else addUnit('sam', x, y);
@@ -745,7 +986,8 @@ function spawnUnits(c) {
 }
 function landOK(x, y) {
   locate(x, y); const t = LC.t[LI];
-  return t !== DEEP && t !== WATER && t !== SNOW && (t !== CITY || LC.d[LI]);
+  if (LC.br[LI] && !LC.d[LI] && LC.bz[LI] - LC.h[LI] < 30) return true;
+  return !isWaterT(t) && t !== SNOW && t !== LAVA && (t !== CITY || LC.d[LI]);
 }
 const DIRS = [[1, 0], [0, 1], [-1, 0], [0, -1]];
 
@@ -781,15 +1023,15 @@ function updateUnits(dt) {
     // Bewegung
     if (def.speed > 0) {
       const sp = def.speed;
-      if (u.type === 'truck' && tileT(u.x, u.y) === ROAD) {
+      if (u.type === 'truck' && isRoadAt(u.x, u.y)) {
         const tx = Math.floor(u.x), ty = Math.floor(u.y);
         const [ddx, ddy] = DIRS[u.dir];
         const nx = u.x + ddx * sp * dt, ny = u.y + ddy * sp * dt;
         const ntx = Math.floor(nx), nty = Math.floor(ny);
         if (ntx !== tx || nty !== ty) {
           const opts = [];
-          for (let k = 0; k < 4; k++) if (k !== (u.dir + 2) % 4 && tileT(tx + DIRS[k][0], ty + DIRS[k][1]) === ROAD) opts.push(k);
-          const straight = tileT(ntx, nty) === ROAD;
+          for (let k = 0; k < 4; k++) if (k !== (u.dir + 2) % 4 && isRoadAt(tx + DIRS[k][0], ty + DIRS[k][1])) opts.push(k);
+          const straight = isRoadAt(ntx, nty);
           if (!straight || (opts.length > 1 && rnd() < 0.35)) {
             if (!opts.length) opts.push((u.dir + 2) % 4);
             u.dir = opts[(rnd() * opts.length) | 0]; u.x = tx + 0.5; u.y = ty + 0.5;
@@ -984,13 +1226,14 @@ function updateBombs(dt) {
   for (let i = bombs.length - 1; i >= 0; i--) {
     const b = bombs[i];
     b.vz -= GRAV * dt; b.x += b.vx * dt; b.y += b.vy * dt; b.z += b.vz * dt;
-    const g = groundH(b.x, b.y);
-    if (b.z <= g) { bombs.splice(i, 1); bombImpact(b.x, b.y, g); }
+    const g = groundH(b.x, b.y), deck = bridgeDeck(b.x, b.y);
+    if (deck > g + 8 && b.z <= deck && b.z > deck - 14) { bombs.splice(i, 1); bombImpact(b.x, b.y, deck, true); }
+    else if (b.z <= g) { bombs.splice(i, 1); bombImpact(b.x, b.y, g, false); }
   }
 }
-function bombImpact(x, y, g) {
+function bombImpact(x, y, g, onDeck) {
   const t = tileT(x, y);
-  if (t === DEEP || t === WATER) {
+  if (isWaterT(t) && !onDeck) {
     for (let k = 0; k < 40; k++) addP('splash', x + rr(-.4, .4), y + rr(-.4, .4), 2, rr(-1.5, 1.5), rr(-1.5, 1.5), rr(80, 260), rr(1, 1.8), rr(3, 6));
     explosion(x, y, g, 1.2);
   } else {
@@ -1007,10 +1250,21 @@ function bombImpact(x, y, g) {
     if (dd > R) continue;
     locate(tx, ty);
     const c = LC, i = LI, tt = c.t[i];
+    if (c.br[i] && !c.d[i] && Math.abs(c.bz[i] - g) < 40) { destroyBridge(c, i, tx, ty); continue; }
     if (c.d[i] || tt === DEEP || tt === WATER || tt === ROAD) continue;
     if (tt === CITY) destroyBuilding(c, i, tx, ty);
     else if (dd < 1.5 && (tt === FOREST || tt === GRASS || tt === PARK || tt === DESERT || tt === SAND)) { c.d[i] = 1; c.dirty = true; }
   }
+}
+function destroyBridge(c, i, tx, ty) {
+  c.d[i] = 1; c.dirty = true;
+  score += 100;
+  const z = c.bz[i], g = c.h[i];
+  popups.push({ x: tx + 0.5, y: ty + 0.5, z: z + 24, text: 'BRÜCKE +100', life: 1.3, col: '#e8e0c8', size: 14 });
+  for (let k = 0; k < 12; k++) addP('debris', tx + rr(.2, .8), ty + rr(.2, .8), z, rr(-1, 1), rr(-1, 1), rr(20, 120), rr(1.5, 3), rr(2.5, 4), 0, g);
+  for (let k = 0; k < 8; k++) addP('smoke', tx + rr(.2, .8), ty + rr(.2, .8), z, rr(-.4, .4), rr(-.4, .4), rr(10, 30), rr(1.5, 3), rr(8, 14), 140);
+  if (isWaterT(c.t[i])) for (let k = 0; k < 14; k++) addP('splash', tx + rr(.2, .8), ty + rr(.2, .8), g + 1, rr(-.8, .8), rr(-.8, .8), rr(60, 180), rr(.8, 1.4), rr(2, 4));
+  Radio.say('bridge', 0.5);
 }
 function destroyBuilding(c, i, tx, ty) {
   c.d[i] = 1; c.dirty = true;
@@ -1059,7 +1313,7 @@ function updateTracers(dt) {
 function gunImpact(x, y) {
   locate(x, y);
   const c = LC, i = LI, t = c.t[i], g = c.h[i];
-  if (t === DEEP || t === WATER) {
+  if (isWaterT(t)) {
     for (let k = 0; k < 3; k++) addP('splash', x, y, 1, rr(-.4, .4), rr(-.4, .4), rr(60, 140), rr(.5, .9), rr(1.5, 3));
   } else if (t === CITY && !c.d[i]) {
     const top = g + c.f[i] * 9;
@@ -1130,13 +1384,89 @@ function spawnCloud(anywhere) {
   }
   const puffs = [], n = 4 + ((rnd() * 6) | 0);
   for (let i = 0; i < n; i++) puffs.push({ dx: rr(-2.2, 2.2), dy: rr(-1.4, 1.4), r: rr(26, 52), dz: rr(0, 18) });
-  clouds.push({ x, y, z: rr(440, 520), puffs });
+  clouds.push({ x, y, z: rr(500, 580), puffs });
 }
 function updClouds(dt) {
   for (let i = clouds.length - 1; i >= 0; i--) {
     const c = clouds[i];
     c.x += 0.35 * dt; c.y -= 0.15 * dt;
     if (Math.hypot(c.x - plane.x, c.y - plane.y) > 52) { clouds.splice(i, 1); spawnCloud(false); }
+  }
+}
+
+// =====================================================================
+//  Vulkanaktivität: Rauch, Glühen, Ausbrüche mit Lavabomben
+// =====================================================================
+let lavaBombs = [], volcanoState = new Map(), eruptWarnT = 0;
+function volcanoesNear(x, y, range) {
+  const out = [], cx = Math.floor(x / VCELL), cy = Math.floor(y / VCELL);
+  for (let j = -1; j <= 1; j++) for (let i = -1; i <= 1; i++) {
+    const v = volcanoInCell(cx + i, cy + j);
+    if (v && Math.hypot(v.x - x, v.y - y) < range) out.push(v);
+  }
+  return out;
+}
+function updateVolcanoes(dt) {
+  eruptWarnT = Math.max(0, eruptWarnT - dt);
+  for (const v of volcanoesNear(plane.x, plane.y, 75)) {
+    let st = volcanoState.get(v.id);
+    if (!st) { st = { next: time + rr(6, 20) }; volcanoState.set(v.id, st); }
+    const rim = volcanoRimZ(v), dist = Math.hypot(v.x - plane.x, v.y - plane.y);
+    if (rnd() < dt * 9) addP('smoke', v.x + rr(-1.2, 1.2), v.y + rr(-1.2, 1.2), rim, rr(-.2, .2) + 0.45, rr(-.2, .2) - 0.2, rr(25, 55), rr(4, 7), rr(10, 18), rr(55, 105));
+    if (rnd() < dt * 4) addP('fire', v.x + rr(-1, 1), v.y + rr(-1, 1), rim - 28, 0, 0, rr(20, 60), rr(.4, .8), rr(6, 11));
+    if (time > st.next) { st.next = time + rr(14, 32); erupt(v, rim, dist); }
+  }
+  // Lavabomben
+  for (let i = lavaBombs.length - 1; i >= 0; i--) {
+    const b = lavaBombs[i];
+    b.vz -= GRAV * dt; b.x += b.vx * dt; b.y += b.vy * dt; b.z += b.vz * dt;
+    if (rnd() < 0.6) addP('smoke', b.x, b.y, b.z, 0, 0, 5, 1.2, 4, 45);
+    if (rnd() < 0.5) addP('fire', b.x, b.y, b.z, 0, 0, 0, 0.25, 4);
+    if (!plane.dying && state === 'play' && !plane.demo && Math.hypot(plane.x - b.x, plane.y - b.y, (plane.z - b.z) / ZU) < 0.9) {
+      lavaBombs.splice(i, 1); explosion(b.x, b.y, b.z, 0.8, true); hurt(14); Radio.say('lava_hit', 0.8, true); continue;
+    }
+    const g = groundH(b.x, b.y);
+    if (b.z <= g) {
+      lavaBombs.splice(i, 1);
+      explosion(b.x, b.y, g + 2, 0.7);
+      if (!isWaterT(tileT(b.x, b.y))) decals.push({ x: b.x, y: b.y, z: g, r: 0.35, type: 'scorch', life: 40 });
+      damageUnits(b.x, b.y, 0.9, 4);
+    }
+  }
+}
+function erupt(v, rim, dist) {
+  explosion(v.x, v.y, rim, 2.4, true);
+  for (let k = 0; k < 40; k++) addP('smoke', v.x + rr(-1.5, 1.5), v.y + rr(-1.5, 1.5), rim + rr(0, 40), rr(-1, 1), rr(-1, 1), rr(60, 140), rr(3, 6), rr(14, 24), rr(40, 80));
+  const n = 10 + ((rnd() * 10) | 0);
+  for (let k = 0; k < n; k++) {
+    const a = rnd() * TAU, sp = rr(1.5, 6.5);
+    lavaBombs.push({ x: v.x, y: v.y, z: rim, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, vz: rr(220, 420) });
+  }
+  if (dist < 45) {
+    eruptWarnT = 4; shake = Math.max(shake, 14 / (1 + dist * 0.05));
+    Radio.say('volcano', 0.9, true);
+    Snd.boom(dist * 0.4, 2.5);
+  }
+}
+function drawVolcanoGlow() {
+  ctx.globalCompositeOperation = 'lighter';
+  for (const v of volcanoesNear(plane.x, plane.y, 75)) {
+    const rim = volcanoRimZ(v), X = sx(v.x, v.y), Y = sy(v.x, v.y, rim - 30);
+    if (X < -200 || X > W + 200 || Y < -200 || Y > H + 200) continue;
+    const r = v.R * 0.3 * 46, a = 0.32 + 0.12 * Math.sin(time * 2.3 + v.id);
+    const gr = ctx.createRadialGradient(X, Y, 0, X, Y, r);
+    gr.addColorStop(0, `rgba(255,170,60,${a})`); gr.addColorStop(1, 'rgba(255,60,0,0)');
+    ctx.fillStyle = gr; ctx.save(); ctx.translate(X, Y); ctx.scale(1, 0.55); ctx.beginPath(); ctx.arc(0, 0, r, 0, TAU); ctx.fill(); ctx.restore();
+  }
+  ctx.globalCompositeOperation = 'source-over';
+}
+function drawLavaBombs() {
+  for (const b of lavaBombs) {
+    const X = sx(b.x, b.y), Y = sy(b.x, b.y, b.z);
+    const gr = ctx.createRadialGradient(X, Y, 0, X, Y, 9);
+    gr.addColorStop(0, 'rgba(255,240,170,1)'); gr.addColorStop(0.4, 'rgba(255,120,30,0.9)'); gr.addColorStop(1, 'rgba(160,30,0,0)');
+    ctx.fillStyle = gr; ctx.beginPath(); ctx.arc(X, Y, 9, 0, TAU); ctx.fill();
+    ctx.fillStyle = '#3a1a10'; ctx.beginPath(); ctx.arc(X, Y, 3, 0, TAU); ctx.fill();
   }
 }
 
@@ -1174,11 +1504,17 @@ function updateAltitude(p, climb, dt) {
   for (let k = 1; k <= 12 && !warn; k++) {
     const dd = k * 0.8, t = dd / p.speed;
     if (t > 1.6) break;
-    if (obstacleH(p.x + ca * dd, p.y + sa * dd) + 10 > p.z + Math.min(0, p.vz) * t) warn = true;
+    const zp = p.z + Math.min(0, p.vz) * t, deck = bridgeDeck(p.x + ca * dd, p.y + sa * dd);
+    if (obstacleH(p.x + ca * dd, p.y + sa * dd) + 10 > zp) warn = true;
+    if (deck >= 0 && zp > deck - 14 && zp < deck + 20) warn = true;
   }
   if (warn && !p.terrainWarn && time > (p.gpwsVoiceT || 0)) { p.gpwsVoiceT = time + 10; Radio.say('terrain', 1, true); }
   p.terrainWarn = warn;
   if (!p.demo && p.z <= obst + 4) { crash(p); return; }
+  if (!p.demo) for (const o of [0, -span, span]) {
+    const deck = bridgeDeck(p.x + px * o, p.y + py * o);
+    if (deck >= 0 && p.z > deck - 10 && p.z < deck + 14) { crash(p); return; }
+  }
   if (!p.demo) for (const u of units) {
     const ud = UDEF[u.type];
     if (!ud || !ud.height || (!u.alive && !ud.ship) || u.hidden) continue;
@@ -1192,7 +1528,7 @@ function crash(p) {
   p.hp = 0; p.crashed = true;
   Snd.gun(false);
   const g = groundH(p.x, p.y);
-  const water = tileT(p.x, p.y) <= WATER && p.z < 20;
+  const water = isWaterT(tileT(p.x, p.y)) && p.z < g + 20;
   if (water) for (let k = 0; k < 60; k++) addP('splash', p.x + rr(-.6, .6), p.y + rr(-.6, .6), 2, rr(-2, 2) + p.vx * 0.2, rr(-2, 2) + p.vy * 0.2, rr(80, 300), rr(1, 2), rr(3, 7));
   explosion(p.x, p.y, Math.max(p.z, g) + 4, 2.8);
   explosion(p.x + p.vx * 0.15, p.y + p.vy * 0.15, Math.max(p.z, g) + 4, 1.6);
@@ -1253,6 +1589,7 @@ function update(dt) {
   updateMissiles(dt);
   updateFlak(dt);
   updateBombs(dt);
+  updateVolcanoes(dt);
   updateTracers(dt);
   updateFlares(dt);
   updParticles(dt);
@@ -1298,6 +1635,7 @@ function render() {
   ctx.fillStyle = '#123a63'; ctx.fillRect(0, 0, W, H);
   drawTerrain();
   drawDecals();
+  drawVolcanoGlow();
   drawPickups();
   drawUnits();
   drawShadows();
@@ -1535,7 +1873,7 @@ function drawUnits() {
   for (const u of vis) drawUnit(u);
 }
 function drawUnit(u) {
-  const g = groundH(u.x, u.y);
+  const g = UDEF[u.type] && UDEF[u.type].ship ? groundH(u.x, u.y) : surfaceH(u.x, u.y);
   const dead = !u.alive;
   const [c1, c2] = dead ? [[44, 40, 36], [30, 28, 26]] : CAMO[u.camo];
   const fl = u.flash > 0;
@@ -1718,6 +2056,7 @@ function drawAir() {
     ctx.strokeStyle = 'rgba(255,240,150,0.95)'; ctx.lineWidth = 2;
     ctx.beginPath(); ctx.moveTo(X, Y); ctx.lineTo(X2, Y2); ctx.stroke();
   }
+  drawLavaBombs();
   // Bomben
   for (const b of bombs) {
     const X = sx(b.x, b.y), Y = sy(b.x, b.y, b.z);
@@ -2001,6 +2340,8 @@ let mmCX = 0, mmCY = 0;
 const MMCOL = [];
 MMCOL[DEEP] = [20, 54, 98]; MMCOL[WATER] = [44, 110, 160]; MMCOL[SAND] = [222, 204, 150]; MMCOL[GRASS] = [96, 150, 64]; MMCOL[FOREST] = [52, 104, 46];
 MMCOL[DESERT] = [214, 178, 110]; MMCOL[ROCK] = [130, 120, 110]; MMCOL[SNOW] = [235, 238, 244]; MMCOL[ROAD] = [70, 70, 74]; MMCOL[CITY] = [170, 160, 150]; MMCOL[PARK] = [96, 150, 64];
+MMCOL[MESA] = [184, 98, 58]; MMCOL[CANYON] = [214, 162, 110]; MMCOL[RIVER] = [58, 122, 150];
+MMCOL[STREAM] = [58, 122, 150]; MMCOL[VOLCANO] = [62, 54, 52]; MMCOL[LAVA] = [255, 110, 30]; MMCOL[ASH] = [100, 94, 90];
 function updateMinimap() {
   mmCX = Math.floor(plane.x); mmCY = Math.floor(plane.y);
   const img = mmg.createImageData(MMS, MMS), d = img.data;
@@ -2009,9 +2350,10 @@ function updateMinimap() {
     const cx = Math.floor(wx / CH), cy = Math.floor(wy / CH);
     const c = chunks.get((cx + 32768) * 65536 + (cy + 32768));
     let t;
-    if (c) t = c.t[(wy - cy * CH) * CH + (wx - cx * CH)];
-    else t = tileInfo(wx, wy).t;
-    const col = MMCOL[t], o = (j * MMS + i) * 4;
+    let bridge = false;
+    if (c) { const k = (wy - cy * CH) * CH + (wx - cx * CH); t = c.t[k]; bridge = c.br[k] && !c.d[k]; }
+    else { const info = tileInfo(wx, wy); t = info.t; bridge = !!info.br; }
+    const col = bridge ? MMCOL[ROAD] : MMCOL[t], o = (j * MMS + i) * 4;
     d[o] = col[0]; d[o + 1] = col[1]; d[o + 2] = col[2]; d[o + 3] = 255;
   }
   mmg.putImageData(img, 0, 0);
@@ -2104,6 +2446,7 @@ function drawHUD() {
     ctx.fillStyle = '#ff3b2f'; ctx.fillText('⚠ RAKETE – FLARES [F]', W / 2, 70);
   }
   if (p.ammo < 1 && (keys.Space || mouseGun)) { ctx.font = '20px Impact, sans-serif'; ctx.fillStyle = '#ffb238'; ctx.fillText('MUNITION LEER', W / 2, 104); }
+  if (eruptWarnT > 0 && (time * 4 % 1) < 0.6) { ctx.font = '22px Impact, sans-serif'; ctx.fillStyle = '#ff8a2a'; ctx.fillText('VULKANAUSBRUCH – LAVABOMBEN!', W / 2, 212); }
   if (p.radarLock && !p.warn) { ctx.font = '16px Impact, sans-serif'; ctx.fillStyle = '#50e6ff'; ctx.fillText('RADARERFASSUNG – TIEFER FLIEGEN ODER RADAR ZERSTÖREN', W / 2, 186); }
   if (p.terrainWarn && !p.dying && (time * 5 % 1) < 0.6) { ctx.font = '26px Impact, sans-serif'; ctx.fillStyle = '#ff3b2f'; ctx.fillText('BODENNÄHE – HOCHZIEHEN!', W / 2, 160); }
   if (p.hp < 25 && (time * 2 % 1) < 0.5) { ctx.font = '20px Impact, sans-serif'; ctx.fillStyle = '#ff6b5a'; ctx.fillText('SCHWERE SCHÄDEN', W / 2, 130); }
