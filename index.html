@@ -781,7 +781,7 @@ function dropBomb() {
   if (plane.bombs <= 0 || plane.bombCd > 0) return;
   plane.bombs--; plane.bombCd = 0.45;
   const side = plane.bombs % 2 ? 1 : -1;
-  const off = side * (0.46 + (plane.bombs >> 1) * 0.16) * PS;
+  const off = side * (0.46 + (plane.bombs >> 1) * 0.16) * planeScale(plane.z);
   const ox = Math.cos(plane.ang + Math.PI / 2) * off, oy = Math.sin(plane.ang + Math.PI / 2) * off;
   bombs.push({ x: plane.x + ox, y: plane.y + oy, z: plane.z - 6, vx: plane.vx, vy: plane.vy, vz: 0 });
   Snd.tone(300, 120, 0.25, 0.15, 'triangle');
@@ -1006,10 +1006,10 @@ function update(dt) {
     }
   } else {
     p.ang += p.bank * 1.9 * dt;
-    updateAltitude(p, climb, dt);
   }
   p.vx = Math.cos(p.ang) * p.speed; p.vy = Math.sin(p.ang) * p.speed;
   p.x += p.vx * dt; p.y += p.vy * dt;
+  if (!p.dying) updateAltitude(p, climb, dt);
   traveled += p.speed * dt;
   p.bombCd -= dt; p.flareCd -= dt;
   if (!p.demo && !p.dying) {
@@ -1281,7 +1281,7 @@ function drawShadows() {
   const p = plane;
   const g = groundH(p.x, p.y);
   p.shadowH += (g - p.shadowH) * 0.2;
-  if (state !== 'over') drawA10(sx(p.x, p.y), sy(p.x, p.y, p.shadowH), p.ang, p.pitch, -p.bank * 0.6 + (p.dying ? p.spin : 0), p.bombs, true);
+  if (state !== 'over') drawA10(sx(p.x, p.y), sy(p.x, p.y, p.shadowH), p.ang, p.pitch, -p.bank * 0.6 + (p.dying ? p.spin : 0), p.bombs, true, PS * SHADOW_SCALE);
   ctx.fillStyle = 'rgba(0,0,0,0.25)';
   for (const m of missiles) { const gg = groundH(m.x, m.y); ctx.beginPath(); ctx.ellipse(sx(m.x, m.y), sy(m.x, m.y, gg), 4, 2, 0, 0, TAU); ctx.fill(); }
   for (const b of bombs) { const gg = groundH(b.x, b.y); ctx.beginPath(); ctx.ellipse(sx(b.x, b.y), sy(b.x, b.y, gg), 4, 2, 0, 0, TAU); ctx.fill(); }
@@ -1366,7 +1366,7 @@ function drawPlane() {
   ctx.save(); ctx.setLineDash([3, 6]); ctx.strokeStyle = 'rgba(255,255,255,0.22)'; ctx.lineWidth = 1;
   ctx.beginPath(); ctx.moveTo(X, Y + 6); ctx.lineTo(SX, SY); ctx.stroke(); ctx.restore();
   const roll = -p.bank * 0.6 + (p.dying ? p.spin : 0);
-  drawA10(X, Y, p.ang, p.pitch, roll, p.bombs, false);
+  drawA10(X, Y, p.ang, p.pitch, roll, p.bombs, false, planeScale(p.z));
   const tmp = [0, 0, 0];
   if (p.firing) {
     xf3(1.16, 0, -0.035, tmp);
@@ -1389,6 +1389,9 @@ function drawPlane() {
 //  Modellkoordinaten: x = vorn, y = rechte Tragfläche, z = oben (Tile-Einheiten)
 // ---------------------------------------------------------------------
 const VZ = 30, PS = 1.3;
+// Darstellungsgröße abhängig von der Flughöhe: tief = klein (weit von der Kamera), hoch = groß
+const SHADOW_SCALE = 0.62;
+function planeScale(z) { return PS * clamp(0.55 + (z / MAXZ) * 0.85, 0.55, 1.4); }
 const A10_GRAY = [128, 137, 143], A10_GRAY2 = [108, 117, 123], A10_ENG = [120, 128, 134];
 const A10_GLASS = [34, 56, 78], A10_DARK = [34, 36, 38], A10_BOMB = [72, 78, 54];
 const A10M = (() => {
@@ -1458,12 +1461,12 @@ const LX = -0.52, LY = -0.18, LZ = 0.83;           // Sonnenrichtung
 function xf3(x, y, z, out) {
   const y2 = y * XF.cr - z * XF.sr, z2 = y * XF.sr + z * XF.cr;
   const x3 = x * XF.cp - z2 * XF.sp, z3 = x * XF.sp + z2 * XF.cp;
-  out[0] = (x3 * XF.ca - y2 * XF.sa) * PS; out[1] = (x3 * XF.sa + y2 * XF.ca) * PS; out[2] = z3 * PS;
+  out[0] = (x3 * XF.ca - y2 * XF.sa) * XF.s; out[1] = (x3 * XF.sa + y2 * XF.ca) * XF.s; out[2] = z3 * XF.s;
   return out;
 }
 const shadowCv = document.createElement('canvas');
-function drawA10(X, Y, ang, pitch, roll, bombsLeft, shadow) {
-  XF = { X, Y, ca: Math.cos(ang), sa: Math.sin(ang), cp: Math.cos(pitch), sp: Math.sin(pitch), cr: Math.cos(roll), sr: Math.sin(roll) };
+function drawA10(X, Y, ang, pitch, roll, bombsLeft, shadow, scale) {
+  XF = { X, Y, s: scale, ca: Math.cos(ang), sa: Math.sin(ang), cp: Math.cos(pitch), sp: Math.sin(pitch), cr: Math.cos(roll), sr: Math.sin(roll) };
   const faces = [];
   for (const f of A10M) {
     if (f.tag !== undefined && f.tag >= bombsLeft) continue;
