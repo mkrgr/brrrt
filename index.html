@@ -47,6 +47,7 @@
       Unter ~35&nbsp;m kann dich keine SAM erfassen – aber Vorsicht: Berge, Bäume und Hochhäuser bringen dich zum Absturz.<br>
       Der kleine Kreis vor dir zeigt, wo die Kanone trifft, das Fadenkreuz dahinter den Bombeneinschlag.<br>
       <b style="color:#ff6b5a">SAM-Stellungen</b> feuern Lenkraketen – wirf Flares und kurve hart. Flak-Panzer schießen Sperrfeuer.<br>
+      <b style="color:#50e6ff">Radarstationen</b> erweitern Reichweite und Feuerrate nahegelegener SAMs. Fregatten haben Flak und Raketen.<br>
       Zerstörte LKWs lassen manchmal <b style="color:#7dff8a">Reparaturkisten</b> fallen. Überfliege sie.
     </div>
     <button id="startBtn">STARTEN</button>
@@ -515,7 +516,12 @@ const LINES = {
   kill_truck: [[LEAD, 'Truck\'s toast.'], [WING, 'Soft target down.'], [LEAD, 'That one\'s not delivering anything anymore.']],
   kill_aaa: [[LEAD, 'Triple-A silenced!'], [JTAC, 'Shilka destroyed. Nice work, Hawg.'], [WING, 'That flak gun is history!']],
   kill_sam: [[LEAD, 'SAM site neutralized!'], [JTAC, 'Good kill on the SAM. Airspace just got safer.'], [WING, 'No more missiles from that one!']],
-  kill_ship: [[LEAD, 'Ship\'s going down!'], [WING, 'Splash one boat!'], [JTAC, 'Vessel destroyed. Outstanding.']],
+  kill_boat: [[LEAD, 'Patrol boat sunk!'], [WING, 'Splash one boat!'], [LEAD, 'That boat\'s sleeping with the fishes.']],
+  kill_frigate: [[LEAD, 'Frigate is going down!'], [JTAC, 'Warship destroyed. Outstanding, Hawg!'], [WING, 'Holy crap, we sank a frigate!']],
+  kill_cargo: [[LEAD, 'Freighter is sinking!'], [WING, 'There go their supplies.'], [JTAC, 'Cargo vessel destroyed.']],
+  kill_tanker: [[LEAD, 'Tanker hit! Look at that fire!'], [WING, 'Damn, that\'s a lot of burning oil!'], [JTAC, 'Massive secondaries on the tanker. Good kill.']],
+  kill_radar: [[LEAD, 'Radar site is down!'], [JTAC, 'Radar destroyed. Their SAMs are half blind now.'], [WING, 'No more eyes in the sky for them!']],
+  radar_lock: [[WING, 'Search radar is painting us, lead.'], [JTAC, 'Hawg, enemy radar has you. Expect SAMs.'], [LEAD, 'Spiked! Radar contact.']],
   kill_depot: [[LEAD, 'Look at that fireball!'], [JTAC, 'Massive secondaries! Fuel depot destroyed.'], [WING, 'Holy hell, look at it burn!']],
   building: [[LEAD, 'Building\'s coming down!'], [JTAC, 'Hawg, Warhammer. Watch the collateral, damn it!'], [WING, 'Well, that\'s urban renewal.']],
   combo: [[WING, 'Lead, you\'re on fire today!'], [JTAC, 'Outstanding, Hawg. Keep it coming!'], [LEAD, 'This is what the Hog was built for!']],
@@ -635,9 +641,13 @@ let mouseGun = false;
 const UDEF = {
   tank: { hp: 4, score: 100, speed: 0.7, r: 0.38, name: 'Panzer' },
   truck: { hp: 1.5, score: 50, speed: 1.7, r: 0.32, name: 'LKW' },
-  aaa: { hp: 3.5, score: 150, speed: 0.45, r: 0.38, name: 'Flakpanzer' },
+  aaa: { hp: 3.5, score: 150, speed: 0.45, r: 0.38, name: 'Flakpanzer', flak: 11 },
   sam: { hp: 3, score: 250, speed: 0, r: 0.45, name: 'SAM' },
-  ship: { hp: 12, score: 400, speed: 0.9, r: 0.95, name: 'Schiff' },
+  boat: { hp: 4, score: 200, speed: 2.0, r: 0.2, len: 1.0, ship: true, height: 20, name: 'Patrouillenboot', flak: 9 },
+  frigate: { hp: 16, score: 600, speed: 1.0, r: 0.24, len: 2.3, ship: true, height: 43, name: 'Fregatte', flak: 12.5, sam: 19 },
+  cargo: { hp: 12, score: 350, speed: 0.8, r: 0.3, len: 2.7, ship: true, height: 40, name: 'Frachter' },
+  tanker: { hp: 14, score: 450, speed: 0.7, r: 0.32, len: 3.1, ship: true, height: 38, name: 'Tanker' },
+  radar: { hp: 4, score: 350, speed: 0, r: 0.65, height: 36, name: 'Radarstation' },
   depot: { hp: 3, score: 300, speed: 0, r: 0.7, name: 'Treibstofflager' },
 };
 
@@ -690,7 +700,8 @@ function addUnit(type, x, y, ang) {
   units.push({
     type, x, y, ang: ang ?? rnd() * TAU, tAng: rnd() * TAU, hp: d.hp, max: d.hp, alive: true,
     cd: 1 + rnd() * 3, burst: 0, bt: 0, turnT: rnd() * 3, wreckT: 0, smokeT: 0, dir: (rnd() * 4) | 0,
-    camo: t === DESERT || t === SAND ? 1 : 0, col: (rnd() * 4) | 0, flash: 0
+    camo: t === DESERT || t === SAND ? 1 : 0, col: (rnd() * 4) | 0, flash: 0,
+    variant: rnd() < 0.5 ? 0 : 1, sink: 0, cd2: 2 + rnd() * 4, cont: type === 'cargo' ? genContainers() : null
   });
 }
 function spawnUnits(c) {
@@ -702,7 +713,13 @@ function spawnUnits(c) {
   for (let k = 0; k < n; k++) {
     const lx = (rnd() * CH) | 0, ly = (rnd() * CH) | 0, i = ly * CH + lx, t = c.t[i];
     const x = c.cx * CH + lx + 0.5, y = c.cy * CH + ly + 0.5, r = rnd();
-    if (t === DEEP || t === WATER) { if (t === DEEP && r < 0.22) addUnit('ship', x, y); continue; }
+    if (t === DEEP || t === WATER) {
+      if (t === DEEP && r < 0.3) {
+        const q = rnd();
+        addUnit(q < 0.3 ? 'boat' : q < 0.55 ? 'cargo' : q < 0.72 ? 'tanker' : 'frigate', x, y);
+      } else if (t === WATER && r < 0.1) addUnit('boat', x, y);
+      continue;
+    }
     if (t === CITY) continue;
     if (t === ROAD) {
       if (r < 0.55) { addUnit('truck', x, y); if (rnd() < 0.5) addUnit('truck', x, y); }
@@ -710,7 +727,7 @@ function spawnUnits(c) {
       continue;
     }
     if (t === SNOW || t === ROCK) {
-      if (r < 0.45) addUnit('aaa', x, y); else if (r < 0.45 + 0.18 * d) addUnit('sam', x, y);
+      if (r < 0.4) addUnit('aaa', x, y); else if (r < 0.58) addUnit('radar', x, y, rnd() * TAU); else if (r < 0.58 + 0.18 * d) addUnit('sam', x, y);
       continue;
     }
     if (r < 0.34) {
@@ -721,7 +738,8 @@ function spawnUnits(c) {
       for (let j = 0; j < m; j++) addUnit('truck', x - Math.cos(a) * j * 0.8, y - Math.sin(a) * j * 0.8, a);
     } else if (r < 0.64) addUnit('aaa', x, y);
     else if (r < 0.64 + 0.09 * Math.min(d, 2.5)) addUnit('sam', x, y);
-    else if (r < 0.92) addUnit('tank', x, y);
+    else if (r < 0.72 + 0.09 * Math.min(d, 2.5)) addUnit('radar', x, y, rnd() * TAU);
+    else if (r < 0.93) addUnit('tank', x, y);
     else addUnit('depot', x, y, 0);
   }
 }
@@ -733,12 +751,19 @@ const DIRS = [[1, 0], [0, 1], [-1, 0], [0, -1]];
 
 function updateUnits(dt) {
   const d = difficulty(), hostile = state === 'play' && !plane.demo;
+  radars = units.filter(r => r.alive && r.type === 'radar' && Math.hypot(r.x - plane.x, r.y - plane.y) < 70);
+  const agl = plane.z - groundH(plane.x, plane.y);
+  const lock = hostile && !plane.dying && agl > 75 && radars.some(r => Math.hypot(r.x - plane.x, r.y - plane.y) < 26);
+  if (lock && !plane.radarLock) Radio.say('radar_lock', 0.5);
+  plane.radarLock = lock;
   for (let n = 0; n < units.length; n++) {
     const u = units[n];
     const dx = plane.x - u.x, dy = plane.y - u.y, dist = Math.hypot(dx, dy);
     if (dist > 120) { u.remove = true; continue; }
     if (!u.alive) {
       u.wreckT -= dt;
+      const def0 = UDEF[u.type];
+      if (def0 && def0.ship) { u.sink += dt * 3.5; if (u.sink > 34) u.hidden = true; }
       if (u.wreckT > 0 && dist < 45) {
         u.smokeT -= dt;
         if (u.smokeT <= 0) {
@@ -778,10 +803,13 @@ function updateUnits(dt) {
         u.turnT -= dt;
         if (u.turnT <= 0) { u.ang += rr(-0.8, 0.8); u.turnT = rr(2, 5); }
         const nx = u.x + Math.cos(u.ang) * sp * dt, ny = u.y + Math.sin(u.ang) * sp * dt;
-        const ok = u.type === 'ship' ? (tileT(nx + Math.cos(u.ang) * 0.9, ny + Math.sin(u.ang) * 0.9) <= WATER) : landOK(nx + Math.cos(u.ang) * 0.4, ny + Math.sin(u.ang) * 0.4);
+        const reach = def.ship ? def.len / 2 + 0.4 : 0.4;
+        const ok = def.ship ? (tileT(nx + Math.cos(u.ang) * reach, ny + Math.sin(u.ang) * reach) <= WATER) : landOK(nx + Math.cos(u.ang) * reach, ny + Math.sin(u.ang) * reach);
         if (ok) { u.x = nx; u.y = ny; } else { u.ang += Math.PI * 0.5 + rnd(); }
-        if (u.type === 'ship' && rnd() < dt * 10) {
-          addP('splash', u.x - Math.cos(u.ang) * 0.9 + rr(-.2, .2), u.y - Math.sin(u.ang) * 0.9 + rr(-.2, .2), 1, 0, 0, 0, rr(1, 2), rr(3, 6));
+        if (def.ship && rnd() < dt * 14) {
+          const b = def.len / 2;
+          addP('splash', u.x - Math.cos(u.ang) * b + rr(-.15, .15), u.y - Math.sin(u.ang) * b + rr(-.15, .15), 1, 0, 0, 0, rr(1, 2), rr(3, 6));
+          if (rnd() < 0.5) addP('splash', u.x + Math.cos(u.ang) * b, u.y + Math.sin(u.ang) * b, 1, rr(-.3, .3), rr(-.3, .3), 20, 0.5, 2.5);
         }
       }
     }
@@ -789,28 +817,41 @@ function updateUnits(dt) {
     const aim = Math.atan2(dy, dx);
     u.tAng += angDiff(u.tAng, aim) * Math.min(1, dt * (dist < 16 ? 3 : 0.3));
     if (!hostile || plane.dying) continue;
-    u.cd -= dt;
-    if (u.type === 'aaa' || u.type === 'ship') {
-      const range = u.type === 'ship' ? 12.5 : 11;
+    u.cd -= dt; u.cd2 -= dt;
+    if (def.flak) {
+      const range = def.flak;
       if (u.burst > 0) {
         u.bt -= dt;
         if (u.bt <= 0) { u.bt = 0.11; u.burst--; fireFlak(u, d); }
       } else if (Math.hypot(dist, (plane.z - groundH(u.x, u.y)) / ZU) < range && u.cd <= 0) {
         u.burst = 3 + Math.min(4, d | 0); u.cd = Math.max(1.8, 3.6 - d * 0.3);
       }
-    } else if (u.type === 'sam') {
-      if (dist < 18 && dist > 3 && u.cd <= 0 && plane.z - groundH(plane.x, plane.y) > 75) {
-        launchMissile(u); u.cd = Math.max(4.5, 9 - d * 0.8) + rnd() * 3;
+    }
+    const samRange = u.type === 'sam' ? 18 : def.sam;
+    if (samRange) {
+      // Radarstationen in der Nähe erhöhen Reichweite und Feuerrate
+      const cover = radars.some(r => Math.hypot(r.x - u.x, r.y - u.y) < 30);
+      if (dist < samRange + (cover ? 6 : 0) && dist > 3 && u.cd2 <= 0 && plane.z - groundH(plane.x, plane.y) > 75) {
+        launchMissile(u); u.cd2 = (Math.max(4.5, 9 - d * 0.8) + rnd() * 3) * (cover ? 0.7 : 1);
       }
     }
   }
   if (frameNo % 30 === 0) units = units.filter(u => !u.remove);
 }
 
+// Abstand zur Einheit; lange Schiffe als Strecke entlang der Längsachse
+function unitDist(u, x, y) {
+  const def = UDEF[u.type];
+  if (!def || !def.len) return Math.hypot(u.x - x, u.y - y);
+  const ca = Math.cos(u.ang), sa = Math.sin(u.ang), dx = x - u.x, dy = y - u.y;
+  const along = clamp(dx * ca + dy * sa, -def.len / 2, def.len / 2);
+  return Math.hypot(dx - ca * along, dy - sa * along);
+}
+let radars = [];
 function damageUnits(x, y, radius, amount) {
   for (const u of units) {
     if (!u.alive) continue;
-    const dd = Math.hypot(u.x - x, u.y - y);
+    const dd = unitDist(u, x, y);
     if (dd < radius + UDEF[u.type].r) {
       u.hp -= amount; u.flash = 0.08;
       if (u.hp <= 0) killUnit(u);
@@ -824,12 +865,21 @@ function killUnit(u) {
   const pts = UDEF[u.type].score * mult;
   score += pts;
   if (mult >= 3 && combo % 4 === 0) Radio.say('combo', 0.8);
-  else if (rnd() < 0.6) Radio.say('kill_' + u.type, 0.6); else Radio.say('kill', 0.5);
+  else if (rnd() < 0.6 || u.type === 'radar') Radio.say('kill_' + u.type, 0.7); else Radio.say('kill', 0.5);
   const g = groundH(u.x, u.y);
   popups.push({ x: u.x, y: u.y, z: g + 30, text: '+' + pts + (mult > 1 ? ' x' + mult : ''), life: 1.4, col: '#ffd76a', size: 16 });
-  const big = u.type === 'depot' || u.type === 'ship' ? 2 : u.type === 'sam' ? 1.4 : 1;
+  const def = UDEF[u.type];
+  const big = u.type === 'tanker' ? 2.6 : u.type === 'depot' || def.ship ? 2 : u.type === 'sam' || u.type === 'radar' ? 1.4 : 1;
   explosion(u.x, u.y, g + 4, big);
-  decals.push({ x: u.x, y: u.y, z: g, r: 0.55 * big, type: 'scorch', life: 60 });
+  if (def.ship) {
+    decals.push({ x: u.x, y: u.y, z: 0, r: def.len * 0.6, type: 'oil', life: u.type === 'tanker' ? 120 : 50 });
+    const ca = Math.cos(u.ang), sa = Math.sin(u.ang), n = Math.round(def.len * 2);
+    for (let i = 0; i < n; i++) {
+      const o = rr(-def.len / 2, def.len / 2);
+      setTimeout(() => state === 'play' && explosion(u.x + ca * o, u.y + sa * o, 8, u.type === 'tanker' ? 1.6 : 0.9), 120 + i * 160);
+    }
+    if (u.type === 'cargo') for (let i = 0; i < 14; i++) addP('debris', u.x, u.y, 14, rr(-2.5, 2.5), rr(-2.5, 2.5), rr(120, 260), rr(1.5, 2.5), rr(4, 6), 0, 0);
+  } else decals.push({ x: u.x, y: u.y, z: g, r: 0.55 * big, type: 'scorch', life: 60 });
   if (u.type === 'truck' && rnd() < 0.35) pickups.push({ x: u.x, y: u.y, life: 30 });
   if (u.type === 'depot') for (let i = 0; i < 4; i++) setTimeout(() => state === 'play' && explosion(u.x + rr(-1, 1), u.y + rr(-1, 1), g + 4, 1.2), 150 + i * 180);
 }
@@ -1128,7 +1178,14 @@ function updateAltitude(p, climb, dt) {
   }
   if (warn && !p.terrainWarn && time > (p.gpwsVoiceT || 0)) { p.gpwsVoiceT = time + 10; Radio.say('terrain', 1, true); }
   p.terrainWarn = warn;
-  if (!p.demo && p.z <= obst + 4) crash(p);
+  if (!p.demo && p.z <= obst + 4) { crash(p); return; }
+  if (!p.demo) for (const u of units) {
+    const ud = UDEF[u.type];
+    if (!ud || !ud.height || (!u.alive && !ud.ship) || u.hidden) continue;
+    if (Math.abs(u.x - p.x) > 3 || Math.abs(u.y - p.y) > 3) continue;
+    const h = groundH(u.x, u.y) + ud.height * (u.alive ? 1 : 0.5) - (u.sink || 0);
+    if (p.z < h + 3 && unitDist(u, p.x, p.y) < ud.r + 0.25) { crash(p); return; }
+  }
 }
 function crash(p) {
   Radio.say('crash', 1, true);
@@ -1308,6 +1365,9 @@ function drawDecals() {
     if (d.type === 'crater') {
       ctx.fillStyle = `rgba(40,30,22,${0.55 * a})`; ctx.beginPath(); ctx.arc(x, y, d.r * 1.5, 0, TAU); ctx.fill();
       ctx.fillStyle = `rgba(25,18,14,${0.8 * a})`; ctx.beginPath(); ctx.arc(x, y, d.r * 0.7, 0, TAU); ctx.fill();
+    } else if (d.type === 'oil') {
+      ctx.fillStyle = `rgba(12,14,22,${0.55 * a})`; ctx.beginPath(); ctx.ellipse(x, y, d.r, d.r * 0.6, 0.7, 0, TAU); ctx.fill();
+      ctx.fillStyle = `rgba(90,60,120,${0.12 * a})`; ctx.beginPath(); ctx.ellipse(x + d.r * 0.2, y - d.r * 0.1, d.r * 0.5, d.r * 0.3, 0.7, 0, TAU); ctx.fill();
     } else if (d.type === 'scorch') {
       ctx.fillStyle = `rgba(20,16,12,${0.5 * a})`; ctx.beginPath(); ctx.arc(x, y, d.r, 0, TAU); ctx.fill();
     } else {
@@ -1327,10 +1387,150 @@ function beginG(x, y, z, ang) {
 function poly(pts) { ctx.beginPath(); ctx.moveTo(pts[0][0], pts[0][1]); for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]); ctx.closePath(); ctx.fill(); }
 function onScreen(x, y, z, m = 80) { const X = sx(x, y), Y = sy(x, y, z); return X > -m && X < W + m && Y > -m && Y < H + m; }
 
+// ---------------------------------------------------------------------
+//  Isometrische 3D-Körper für Schiffe und Radarstationen
+//  Bauteile: Grundriss (lokal, Tile-Einheiten, x = vorn) als Prisma von z0 bis z1 (px)
+// ---------------------------------------------------------------------
+let partShade = 1, partFlash = false;
+const rectPts = (x0, x1, y0, y1) => [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
+function circPts(r, n = 10) { const p = []; for (let i = 0; i < n; i++) p.push([Math.cos(i / n * TAU) * r, Math.sin(i / n * TAU) * r]); return p; }
+function hullPts(L, B) {
+  const h = L / 2;
+  return [[h, 0], [h - B * 1.3, B / 2], [-h + 0.06, B / 2], [-h, B * 0.32], [-h, -B * 0.32], [-h + 0.06, -B / 2], [h - B * 1.3, -B / 2]];
+}
+function toWorld(u, px, py, rot, pts) {
+  const ca = Math.cos(u.ang), sa = Math.sin(u.ang), cr = Math.cos(rot), sr = Math.sin(rot);
+  return pts.map(([a, b]) => { const lx = px + a * cr - b * sr, ly = py + a * sr + b * cr; return [u.x + lx * ca - ly * sa, u.y + lx * sa + ly * ca]; });
+}
+function partCol(c, k) { return partFlash ? '#fff' : rgb(c, k * partShade); }
+function prismW(w, base, z0, z1, col, top) {
+  const n = w.length;
+  let area = 0;
+  for (let i = 0; i < n; i++) { const a = w[i], b = w[(i + 1) % n]; area += a[0] * b[1] - b[0] * a[1]; }
+  const s = area > 0 ? 1 : -1;
+  if (z1 > z0) for (let i = 0; i < n; i++) {
+    const a = w[i], b = w[(i + 1) % n];
+    const nx = s * (b[1] - a[1]), ny = -s * (b[0] - a[0]);
+    if (nx + ny <= 0) continue;                       // Seite zeigt vom Betrachter weg
+    const len = Math.hypot(nx, ny) || 1;
+    const k = 0.68 + 0.16 * (ny - nx) / len;
+    ctx.fillStyle = partCol(col, k);
+    ctx.beginPath();
+    ctx.moveTo(sx(a[0], a[1]), sy(a[0], a[1], base + z0)); ctx.lineTo(sx(b[0], b[1]), sy(b[0], b[1], base + z0));
+    ctx.lineTo(sx(b[0], b[1]), sy(b[0], b[1], base + z1)); ctx.lineTo(sx(a[0], a[1]), sy(a[0], a[1], base + z1));
+    ctx.closePath(); ctx.fill();
+  }
+  ctx.fillStyle = partCol(top || col, 1);
+  ctx.beginPath();
+  for (let i = 0; i < n; i++) { const X = sx(w[i][0], w[i][1]), Y = sy(w[i][0], w[i][1], base + z1); i ? ctx.lineTo(X, Y) : ctx.moveTo(X, Y); }
+  ctx.closePath(); ctx.fill();
+}
+// parts: { pts, z0, z1, c, t?, px?, py?, rot?, layer? }
+function drawParts(u, base, parts) {
+  const list = parts.map(p => {
+    const w = toWorld(u, p.px || 0, p.py || 0, p.rot || 0, p.pts);
+    let cx = 0, cy = 0; for (const q of w) { cx += q[0]; cy += q[1]; }
+    return { w, d: (cx + cy) / w.length + p.z0 * 0.004 + (p.layer || 0), p };
+  });
+  list.sort((a, b) => a.d - b.d);
+  for (const it of list) prismW(it.w, base, it.p.z0, it.p.z1, it.p.c, it.p.t);
+}
+
+const CONTAINER_COLS = [[176, 54, 44], [44, 92, 160], [40, 120, 72], [214, 140, 40], [200, 200, 196], [120, 60, 120], [60, 140, 150]];
+const HULL_COLS = [[38, 56, 92], [42, 42, 46], [36, 84, 62], [120, 34, 30]];
+function shipParts(u) {
+  const P = [], rel = u.tAng - u.ang;
+  const add = (pts, z0, z1, c, t, extra) => P.push(Object.assign({ pts, z0, z1, c, t }, extra || {}));
+  switch (u.type) {
+    case 'boat': {
+      add(hullPts(1.0, 0.26), -1, 4, [92, 100, 108], [150, 154, 156], { layer: -100 });
+      add(rectPts(-0.16, 0.14, -0.08, 0.08), 4, 11, [176, 180, 182], [205, 207, 208]);
+      add(rectPts(0.1, 0.15, -0.07, 0.07), 7, 10, [40, 52, 66]);
+      add(rectPts(-0.06, -0.02, -0.012, 0.012), 11, 21, [70, 70, 72]);
+      add(circPts(0.055, 8), 4, 7, [110, 116, 120], null, { px: 0.3 });
+      add(rectPts(0, 0.2, -0.012, 0.012), 6, 7.5, [40, 40, 40], null, { px: 0.3, rot: rel });
+      break;
+    }
+    case 'frigate': {
+      const g1 = [104, 112, 120], g2 = [150, 156, 162];
+      add(hullPts(2.3, 0.42), -2, 7, g1, [124, 130, 136], { layer: -100 });
+      add(rectPts(-1.12, -0.66, -0.17, 0.17), 7, 7.4, [92, 96, 100], [96, 100, 104], { layer: -50 });   // Helikopterdeck
+      add(rectPts(0.44, 0.6, -0.1, 0.1), 7, 8.5, [60, 64, 68], [52, 56, 60], { layer: -50 });            // VLS-Zellen
+      add(rectPts(-0.62, 0.3, -0.16, 0.16), 7, 16, g2, [170, 175, 180]);                                  // Aufbauten + Hangar
+      add(rectPts(0.1, 0.32, -0.14, 0.14), 16, 24, g2, [176, 180, 184]);                                  // Brücke
+      add(rectPts(0.315, 0.335, -0.12, 0.12), 19, 22, [36, 46, 58]);                                       // Brückenfenster
+      add(rectPts(-0.46, -0.26, -0.08, 0.08), 16, 27, [80, 82, 86], [28, 28, 30]);                         // Schornstein
+      add(rectPts(-0.04, 0.04, -0.03, 0.03), 24, 40, [96, 100, 104]);                                     // Mast
+      add(rectPts(-0.16, 0.16, -0.02, 0.02), 40, 43, [200, 204, 206], null, { rot: time * 2.5 });         // Radar
+      add(circPts(0.05, 8), 16, 21, [220, 222, 222], null, { px: -0.12, py: 0.1 });                        // CIWS
+      add(rectPts(-0.08, 0.08, -0.07, 0.07), 7, 12, g2, [170, 175, 180], { px: 0.78, rot: rel });          // Geschützturm
+      add(rectPts(0.06, 0.32, -0.012, 0.012), 9.5, 11, [50, 52, 54], null, { px: 0.78, rot: rel });
+      break;
+    }
+    case 'cargo': {
+      const hc = HULL_COLS[u.col % HULL_COLS.length];
+      add(hullPts(2.7, 0.56), -2, 3, [150, 40, 36], null, { layer: -101 });
+      add(hullPts(2.7, 0.56), 3, 9, hc, [116, 66, 52], { layer: -100 });
+      for (const c of u.cont) add(rectPts(c.x0, c.x0 + 0.3, c.y0, c.y0 + 0.23), 9 + c.lvl * 7, 16 + c.lvl * 7, CONTAINER_COLS[c.col]);
+      for (const xk of [-0.62, 0.38]) add(rectPts(xk, xk + 0.04, -0.02, 0.02), 9, 34, [210, 170, 40]);     // Kranmasten
+      add(rectPts(-1.26, -0.9, -0.27, 0.27), 9, 31, [226, 226, 220], [236, 236, 232]);                     // Brückenhaus
+      add(rectPts(-0.905, -0.89, -0.25, 0.25), 26, 29, [40, 50, 62]);                                      // Fensterband
+      add(rectPts(-1.24, -1.08, -0.08, 0.08), 31, 40, [196, 58, 40], [30, 30, 30]);                        // Schornstein
+      break;
+    }
+    case 'tanker': {
+      const hc = u.col % 2 ? [120, 32, 30] : [52, 54, 58];
+      add(hullPts(3.1, 0.6), -2, 3, [150, 40, 36], null, { layer: -101 });
+      add(hullPts(3.1, 0.6), 3, 8, hc, [124, 60, 48], { layer: -100 });
+      add(rectPts(-1.0, 1.25, -0.025, 0.025), 8, 10, [206, 192, 120], [226, 212, 140]);                    // Rohrleitung
+      add(rectPts(-0.06, 0.06, -0.24, 0.24), 8, 11, [190, 176, 110]);                                      // Ladeverteiler
+      for (const xk of [-0.75, -0.35, 0.35, 0.75, 1.1]) add(circPts(0.07, 8), 8, 10, [150, 70, 56], [170, 82, 64], { px: xk, py: 0.14 });
+      add(rectPts(-1.52, -1.16, -0.28, 0.28), 8, 30, [226, 226, 220], [236, 236, 232]);
+      add(rectPts(-1.165, -1.15, -0.26, 0.26), 25, 28, [40, 50, 62]);
+      add(rectPts(-1.5, -1.36, -0.08, 0.08), 30, 38, [34, 34, 36], [20, 20, 20]);
+      add(rectPts(1.32, 1.35, -0.012, 0.012), 8, 20, [80, 80, 80]);
+      break;
+    }
+  }
+  return P;
+}
+function radarParts(u) {
+  const P = [], dead = !u.alive;
+  const add = (pts, z0, z1, c, t, extra) => P.push(Object.assign({ pts, z0, z1, c, t }, extra || {}));
+  add(rectPts(-0.62, 0.62, -0.62, 0.62), 0, 2, [146, 144, 136], [166, 164, 156], { layer: -100 });
+  add(rectPts(-0.52, -0.1, -0.52, -0.16), 2, dead ? 5 : 12, [136, 142, 116], [104, 110, 92]);
+  add(rectPts(0.24, 0.5, -0.52, -0.32), 2, dead ? 3 : 7, [96, 104, 84], [80, 88, 70]);
+  if (dead) return P;
+  if (u.variant === 0) {
+    add(rectPts(-0.06, 0.06, -0.06, 0.06), 2, 30, [88, 90, 92], null, { px: 0.15, py: 0.2 });
+    add(rectPts(-0.06, 0.06, -0.38, 0.38), 30, 36, [196, 198, 192], [226, 228, 222], { px: 0.15, py: 0.2, rot: time * 1.8 });
+    add(rectPts(0.06, 0.15, -0.02, 0.02), 31, 34, [70, 70, 70], null, { px: 0.15, py: 0.2, rot: time * 1.8 });
+  } else {
+    add(circPts(0.3, 12), 2, 12, [186, 186, 180], [200, 200, 196], { px: 0.15, py: 0.2 });
+  }
+  return P;
+}
+function drawRadome(u, g) {
+  const cx = u.x + Math.cos(u.ang) * 0.15 - Math.sin(u.ang) * 0.2, cy = u.y + Math.sin(u.ang) * 0.15 + Math.cos(u.ang) * 0.2;
+  const X = sx(cx, cy), Y = sy(cx, cy, g + 24), r = 15;
+  const gr = ctx.createRadialGradient(X - r * 0.4, Y - r * 0.4, 1, X, Y, r);
+  gr.addColorStop(0, partFlash ? '#fff' : '#ffffff'); gr.addColorStop(0.7, '#d8dad6'); gr.addColorStop(1, '#9a9c98');
+  ctx.fillStyle = gr; ctx.beginPath(); ctx.arc(X, Y, r, 0, TAU); ctx.fill();
+  if ((time * 1.2 % 1) < 0.15) { ctx.fillStyle = '#ff3030'; ctx.beginPath(); ctx.arc(X, Y - r, 2.2, 0, TAU); ctx.fill(); }
+}
+function genContainers() {
+  const c = [];
+  for (let b = 0; b < 5; b++) for (const y0 of [-0.25, 0.02]) {
+    const h = 1 + ((rnd() * 3) | 0);
+    for (let l = 0; l < h; l++) c.push({ x0: -0.72 + b * 0.34, y0, lvl: l, col: (rnd() * CONTAINER_COLS.length) | 0 });
+  }
+  return c;
+}
+
 const CAMO = [[[86, 98, 58], [64, 74, 42]], [[178, 150, 100], [140, 116, 76]]];
 const TRUCKC = [[86, 98, 58], [150, 60, 40], [70, 90, 120], [200, 190, 160]];
 function drawUnits() {
-  const vis = units.filter(u => !u.hidden && onScreen(u.x, u.y, 0, 100));
+  const vis = units.filter(u => !u.hidden && onScreen(u.x, u.y, 0, 170));
   vis.sort((a, b) => (a.x + a.y) - (b.x + b.y));
   for (const u of vis) drawUnit(u);
 }
@@ -1394,22 +1594,28 @@ function drawUnit(u) {
       }
       break;
     }
-    case 'ship': {
-      const hull = [[1, 0], [0.6, 0.28], [-0.9, 0.26], [-0.95, 0], [-0.9, -0.26], [0.6, -0.28]];
-      beginG(u.x, u.y, 0, u.ang); ctx.fillStyle = 'rgba(255,255,255,0.25)'; ctx.scale(1.1, 1.2); poly(hull); ctx.restore();
-      beginG(u.x, u.y, 2, u.ang); ctx.fillStyle = C([70, 76, 84], 0.7); poly(hull); ctx.restore();
-      beginG(u.x, u.y, 6, u.ang);
-      ctx.fillStyle = C(dead ? [40, 40, 40] : [120, 128, 136]); poly(hull);
+    case 'boat': case 'frigate': case 'cargo': case 'tanker': {
+      const def = UDEF[u.type];
       if (!dead) {
-        ctx.fillStyle = C([150, 156, 162]); ctx.fillRect(-0.45, -0.15, 0.5, 0.3);
-        ctx.fillStyle = '#333'; ctx.fillRect(-0.2, -0.05, 0.1, 0.1);
+        // Bugwelle / Kielwasser
+        beginG(u.x, u.y, 0, u.ang); ctx.fillStyle = 'rgba(235,245,255,0.28)';
+        ctx.scale(def.len / 2 + 0.12, 0.32 + def.len * 0.04); ctx.beginPath(); ctx.arc(0, 0, 1, 0, TAU); ctx.fill(); ctx.restore();
       }
-      ctx.restore();
-      if (!dead) {
-        beginG(u.x + Math.cos(u.ang) * 0.6, u.y + Math.sin(u.ang) * 0.6, 9, u.tAng);
-        ctx.fillStyle = '#555'; ctx.fillRect(0, -0.03, 0.3, 0.06); ctx.fillStyle = C([140, 146, 152]); ctx.beginPath(); ctx.arc(0, 0, 0.1, 0, TAU); ctx.fill();
-        ctx.restore();
+      partFlash = fl; partShade = dead ? 0.4 : 1;
+      ctx.globalAlpha = dead ? clamp(1 - u.sink / 34, 0, 1) : 1;
+      drawParts(u, -u.sink, shipParts(u));
+      ctx.globalAlpha = 1; partFlash = false; partShade = 1;
+      break;
+    }
+    case 'radar': {
+      partFlash = fl; partShade = dead ? 0.45 : 1;
+      drawParts(u, g, radarParts(u));
+      if (!dead && u.variant === 1) drawRadome(u, g);
+      if (!dead && u.variant === 0 && (time * 1.2 % 1) < 0.15) {
+        const cx = u.x + Math.cos(u.ang) * 0.15 - Math.sin(u.ang) * 0.2, cy = u.y + Math.sin(u.ang) * 0.15 + Math.cos(u.ang) * 0.2;
+        ctx.fillStyle = '#ff3030'; ctx.beginPath(); ctx.arc(sx(cx, cy), sy(cx, cy, g + 38), 2.2, 0, TAU); ctx.fill();
       }
+      partFlash = false; partShade = 1;
       break;
     }
     case 'depot': {
@@ -1426,14 +1632,16 @@ function drawUnit(u) {
       break;
     }
   }
+  const top = g + (UDEF[u.type].height || 0);
   if (!dead && u.hp < u.max) {
-    const X = sx(u.x, u.y), Y = sy(u.x, u.y, g + 26);
+    const X = sx(u.x, u.y), Y = sy(u.x, u.y, top + 26);
     ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(X - 11, Y, 22, 4);
     ctx.fillStyle = '#ff5a3a'; ctx.fillRect(X - 10, Y + 1, 20 * u.hp / u.max, 2);
   }
-  if (!dead && (u.type === 'sam' || u.type === 'aaa')) {
-    const X = sx(u.x, u.y), Y = sy(u.x, u.y, g + 36 + Math.sin(time * 4) * 2);
-    ctx.fillStyle = u.type === 'sam' ? 'rgba(255,60,50,0.85)' : 'rgba(255,150,40,0.85)';
+  const udef = UDEF[u.type];
+  if (!dead && (u.type === 'sam' || udef.sam || udef.flak || u.type === 'radar')) {
+    const X = sx(u.x, u.y), Y = sy(u.x, u.y, top + 36 + Math.sin(time * 4) * 2);
+    ctx.fillStyle = u.type === 'sam' || udef.sam ? 'rgba(255,60,50,0.85)' : u.type === 'radar' ? 'rgba(80,230,255,0.85)' : 'rgba(255,150,40,0.85)';
     ctx.beginPath(); ctx.moveTo(X - 5, Y - 6); ctx.lineTo(X + 5, Y - 6); ctx.lineTo(X, Y); ctx.closePath(); ctx.fill();
   }
 }
@@ -1823,7 +2031,8 @@ function drawMinimap() {
     if (!u.alive || u.hidden) continue;
     const px = (u.x - plane.x) / MMK, py = (u.y - plane.y) / MMK;
     if (Math.abs(px) > MMS / 2 || Math.abs(py) > MMS / 2) continue;
-    ctx.fillStyle = u.type === 'sam' ? '#ff2a2a' : u.type === 'aaa' ? '#ff9a2a' : '#ffe14a';
+    const md = UDEF[u.type];
+    ctx.fillStyle = u.type === 'sam' || md.sam ? '#ff2a2a' : u.type === 'radar' ? '#50e6ff' : md.flak ? '#ff9a2a' : md.ship ? '#e8e8e8' : '#ffe14a';
     ctx.fillRect(px - 1.2, py - 1.2, 2.4, 2.4);
   }
   for (const k2 of pickups) { ctx.fillStyle = '#7dff8a'; ctx.fillRect((k2.x - plane.x) / MMK - 1.5, (k2.y - plane.y) / MMK - 1.5, 3, 3); }
@@ -1895,6 +2104,7 @@ function drawHUD() {
     ctx.fillStyle = '#ff3b2f'; ctx.fillText('⚠ RAKETE – FLARES [F]', W / 2, 70);
   }
   if (p.ammo < 1 && (keys.Space || mouseGun)) { ctx.font = '20px Impact, sans-serif'; ctx.fillStyle = '#ffb238'; ctx.fillText('MUNITION LEER', W / 2, 104); }
+  if (p.radarLock && !p.warn) { ctx.font = '16px Impact, sans-serif'; ctx.fillStyle = '#50e6ff'; ctx.fillText('RADARERFASSUNG – TIEFER FLIEGEN ODER RADAR ZERSTÖREN', W / 2, 186); }
   if (p.terrainWarn && !p.dying && (time * 5 % 1) < 0.6) { ctx.font = '26px Impact, sans-serif'; ctx.fillStyle = '#ff3b2f'; ctx.fillText('BODENNÄHE – HOCHZIEHEN!', W / 2, 160); }
   if (p.hp < 25 && (time * 2 % 1) < 0.5) { ctx.font = '20px Impact, sans-serif'; ctx.fillStyle = '#ff6b5a'; ctx.fillText('SCHWERE SCHÄDEN', W / 2, 130); }
   Radio.draw();
