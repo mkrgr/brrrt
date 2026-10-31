@@ -34,7 +34,8 @@
     <div class="sub">Fairchild Republic A-10 Thunderbolt II · Erdkampfunterstützung</div>
     <table>
       <tr><td>← → / A D</td><td>Steuern</td></tr>
-      <tr><td>↑ ↓ / W S</td><td>Schub erhöhen / drosseln</td></tr>
+      <tr><td>↑ ↓ / W S</td><td>Steigen / Sinken</td></tr>
+      <tr><td>E / Q</td><td>Schub erhöhen / drosseln</td></tr>
       <tr><td>Leertaste / Linksklick</td><td>GAU-8 Avenger 30&nbsp;mm (BRRRT)</td></tr>
       <tr><td>B / Rechtsklick</td><td>Mk-82 Bombe abwerfen</td></tr>
       <tr><td>F</td><td>Täuschkörper (Flares)</td></tr>
@@ -42,6 +43,8 @@
     </table>
     <div class="tips">
       Die Welt wird bei jedem Start neu generiert: Meer, Strände, Wiesen, Wälder, Wüsten, Berge und Städte.<br>
+      Tief fliegen macht die Kanone präzise, aber Flak gefährlicher. Hoch fliegen schützt vor Flak, aber nicht vor SAMs.
+      Unter ~35&nbsp;m kann dich keine SAM erfassen. Das Gelände wird automatisch überflogen.<br>
       Der kleine Kreis vor dir zeigt, wo die Kanone trifft, das Fadenkreuz dahinter den Bombeneinschlag.<br>
       <b style="color:#ff6b5a">SAM-Stellungen</b> feuern Lenkraketen – wirf Flares und kurve hart. Flak-Panzer schießen Sperrfeuer.<br>
       Zerstörte LKWs lassen manchmal <b style="color:#7dff8a">Reparaturkisten</b> fallen. Überfliege sie.
@@ -69,9 +72,10 @@ const MARGIN = 170;                 // Platz nach oben für Berge/Gebäude im Ch
 const CW_PX = CH * TW, CH_PX = CH * TH + MARGIN + 8;
 const MAX_CANVASES = 48;
 const ZU = 32;                      // px Höhe pro Tile-Einheit
-const PZ = 215;                     // Flughöhe in px
+const PZ = 215;                     // Start-Flughöhe in px
+const MINCLR = 38;                  // Mindestabstand über Gelände/Gebäuden (px)
+const MAXZ = 360;                   // maximale Flughöhe (px)
 const GRAV = 220;                   // Bombengravitation px/s²
-const GUNR = 5.2;                   // Kanonen-Treffpunkt vor dem Flugzeug (Tiles)
 const MAXAMMO = 1174, MAXBOMBS = 6, MAXFLARES = 24;
 const TAU = Math.PI * 2;
 
@@ -520,12 +524,12 @@ function newWorld(demo) {
   }
   plane = {
     x: startX, y: startY, z: PZ, ang: -Math.PI * 0.75 + 0.3, speed: 6.5, bank: 0, vx: 0, vy: 0,
-    hp: 100, ammo: MAXAMMO, bombs: MAXBOMBS, flares: MAXFLARES,
+    alt: PZ, vz: 0, pitch: 0, terrainWarn: false, hp: 100, ammo: MAXAMMO, bombs: MAXBOMBS, flares: MAXFLARES,
     firing: false, fireAcc: 0, bombCd: 0, flareCd: 0, brrrtT: 0, bombRegen: 0, flareRegen: 0, dying: 0, spin: 0, shadowH: 0, demo
   };
   spawnOn = true;
   for (let i = 0; i < 16; i++) spawnCloud(true);
-  camX = (plane.x - plane.y) * HW; camY = (plane.x + plane.y) * HH - PZ * 0.5;
+  camX = (plane.x - plane.y) * HW; camY = (plane.x + plane.y) * HH - plane.z * 0.5;
   updateMinimap();
 }
 
@@ -649,15 +653,15 @@ function updateUnits(dt) {
     if (!hostile || plane.dying) continue;
     u.cd -= dt;
     if (u.type === 'aaa' || u.type === 'ship') {
-      const range = u.type === 'ship' ? 12 : 10;
+      const range = u.type === 'ship' ? 12.5 : 11;
       if (u.burst > 0) {
         u.bt -= dt;
         if (u.bt <= 0) { u.bt = 0.11; u.burst--; fireFlak(u, d); }
-      } else if (dist < range && u.cd <= 0) {
+      } else if (Math.hypot(dist, (plane.z - groundH(u.x, u.y)) / ZU) < range && u.cd <= 0) {
         u.burst = 3 + Math.min(4, d | 0); u.cd = Math.max(1.8, 3.6 - d * 0.3);
       }
     } else if (u.type === 'sam') {
-      if (dist < 17 && dist > 3 && u.cd <= 0) {
+      if (dist < 18 && dist > 3 && u.cd <= 0 && plane.z - groundH(plane.x, plane.y) > 75) {
         launchMissile(u); u.cd = Math.max(4.5, 9 - d * 0.8) + rnd() * 3;
       }
     }
@@ -739,6 +743,7 @@ function updateMissiles(dt) {
     m.x += Math.cos(m.ang) * m.speed * dt; m.y += Math.sin(m.ang) * m.speed * dt;
     m.trailT -= dt;
     if (m.trailT <= 0) { m.trailT = 0.025; addP('smoke', m.x, m.y, m.z, rr(-.05, .05), rr(-.05, .05), rr(-3, 3), rr(1, 1.8), rr(3, 5), 235); }
+    if (tgt === plane && plane.z - groundH(plane.x, plane.y) < 72 && rnd() < dt * 0.6) { m.target = null; tgt = null; }
     if (tgt === plane) {
       const dd = Math.hypot(plane.x - m.x, plane.y - m.y, (plane.z - m.z) / ZU);
       if (dd < 18) warn = true;
@@ -776,7 +781,8 @@ function dropBomb() {
   if (plane.bombs <= 0 || plane.bombCd > 0) return;
   plane.bombs--; plane.bombCd = 0.45;
   const side = plane.bombs % 2 ? 1 : -1;
-  const ox = Math.cos(plane.ang + Math.PI / 2) * 0.35 * side, oy = Math.sin(plane.ang + Math.PI / 2) * 0.35 * side;
+  const off = side * (0.46 + (plane.bombs >> 1) * 0.16) * PS;
+  const ox = Math.cos(plane.ang + Math.PI / 2) * off, oy = Math.sin(plane.ang + Math.PI / 2) * off;
   bombs.push({ x: plane.x + ox, y: plane.y + oy, z: plane.z - 6, vx: plane.vx, vy: plane.vy, vz: 0 });
   Snd.tone(300, 120, 0.25, 0.15, 'triangle');
 }
@@ -798,6 +804,8 @@ function bombImpact(x, y, g) {
     decals.push({ x, y, z: g, r: 1.1, type: 'crater', life: 120 });
   }
   damageUnits(x, y, 2.3, 12);
+  const pd = Math.hypot(plane.x - x, plane.y - y, (plane.z - g) / ZU);
+  if (pd < 2.4) { hurt(24 * (1 - pd / 2.4)); popups.push({ x: plane.x, y: plane.y, z: plane.z + 30, text: 'ZU TIEF!', life: 1.2, col: '#ff6b5a', size: 18 }); }
   // Gebäude / Vegetation zerstören
   const R = 2.0;
   for (let ty = Math.floor(y - R); ty <= Math.floor(y + R); ty++) for (let tx = Math.floor(x - R); tx <= Math.floor(x + R); tx++) {
@@ -835,11 +843,12 @@ function updateGun(dt) {
   }
   plane.fireAcc += dt * 65;
   const ca = Math.cos(plane.ang), sa = Math.sin(plane.ang);
+  const aim = gunAim(), dur = 0.05 + Math.hypot(aim.range, aim.agl / ZU) * 0.012;
   while (plane.fireAcc >= 1 && plane.ammo > 0) {
     plane.fireAcc -= 1; plane.ammo--;
-    const r = Math.sqrt(rnd()) * 0.6, a = rnd() * TAU;
-    const ix = plane.x + ca * GUNR + Math.cos(a) * r + plane.vx * 0.13, iy = plane.y + sa * GUNR + Math.sin(a) * r + plane.vy * 0.13;
-    tracers.push({ x0: plane.x + ca * 0.9, y0: plane.y + sa * 0.9, z0: plane.z - 4, x1: ix, y1: iy, z1: groundH(ix, iy), t: 0, dur: 0.13, vis: rnd() < 0.45 });
+    const r = Math.sqrt(rnd()) * aim.spread, a = rnd() * TAU;
+    const ix = plane.x + ca * aim.range + Math.cos(a) * r + plane.vx * dur, iy = plane.y + sa * aim.range + Math.sin(a) * r + plane.vy * dur;
+    tracers.push({ x0: plane.x + ca * 1.4, y0: plane.y + sa * 1.4, z0: plane.z - 4, x1: ix, y1: iy, z1: groundH(ix, iy), t: 0, dur, vis: rnd() < 0.45 });
   }
   shake = Math.max(shake, 1.5);
 }
@@ -923,7 +932,7 @@ function spawnCloud(anywhere) {
   }
   const puffs = [], n = 4 + ((rnd() * 6) | 0);
   for (let i = 0; i < n; i++) puffs.push({ dx: rr(-2.2, 2.2), dy: rr(-1.4, 1.4), r: rr(26, 52), dz: rr(0, 18) });
-  clouds.push({ x, y, z: rr(330, 420), puffs });
+  clouds.push({ x, y, z: rr(440, 520), puffs });
 }
 function updClouds(dt) {
   for (let i = clouds.length - 1; i >= 0; i--) {
@@ -936,17 +945,54 @@ function updClouds(dt) {
 // =====================================================================
 //  Update
 // =====================================================================
+// Höchstes Hindernis auf einem Tile (Gelände + Gebäude + Bäume)
+function obstacleH(x, y) {
+  locate(x, y);
+  const t = LC.t[LI];
+  let h = LC.h[LI];
+  if (!LC.d[LI]) { if (t === CITY) h += LC.f[LI] * 9 + 6; else if (t === FOREST) h += 16; }
+  return h;
+}
+function updateAltitude(p, climb, dt) {
+  const ca = Math.cos(p.ang), sa = Math.sin(p.ang), px = -sa, py = ca;
+  // unter dem Flugzeug, inkl. Tragflächenspitzen
+  let floorHere = 0;
+  for (const o of [0, -0.9, 0.9]) floorHere = Math.max(floorHere, obstacleH(p.x + px * o, p.y + py * o));
+  floorHere += MINCLR;
+  // Vorausschau: rechtzeitig steigen
+  let floorAhead = floorHere;
+  for (let k = 1; k <= 9; k++) {
+    const dd = k * 0.8, need = obstacleH(p.x + ca * dd, p.y + sa * dd) + MINCLR - dd / p.speed * 210;
+    if (need > floorAhead) floorAhead = need;
+  }
+  p.alt = clamp(p.alt + climb * 140 * dt, floorHere, MAXZ);
+  const target = Math.max(p.alt, floorAhead);
+  const oldZ = p.z, rate = target > p.z ? 260 : 170;
+  p.z += clamp(target - p.z, -rate * dt, rate * dt);
+  if (p.z < floorHere) p.z = floorHere;        // niemals in den Boden
+  p.vz = lerp(p.vz, (p.z - oldZ) / Math.max(dt, 1e-3), Math.min(1, dt * 6));
+  p.pitch = clamp(p.vz / 420, -0.32, 0.32);
+  p.terrainWarn = floorAhead > p.alt + 8;
+  p.agl = p.z - groundH(p.x, p.y);
+}
+function gunAim() {
+  const agl = Math.max(20, plane.z - groundH(plane.x, plane.y));
+  return { range: clamp(agl / ZU * 0.8, 1.4, 9), spread: 0.25 + agl / ZU * 0.05, agl };
+}
+
 function update(dt) {
   time += dt; frameNo++;
   const p = plane;
   // Steuerung
-  let turn = 0, thr = 0;
-  if (p.demo) { turn = Math.sin(time * 0.25) * 0.35; }
+  let turn = 0, thr = 0, climb = 0;
+  if (p.demo) { turn = Math.sin(time * 0.25) * 0.35; p.alt = 200 + Math.sin(time * 0.4) * 90; }
   else if (!p.dying) {
     if (keys.ArrowLeft || keys.KeyA) turn -= 1;
     if (keys.ArrowRight || keys.KeyD) turn += 1;
-    if (keys.ArrowUp || keys.KeyW) thr += 1;
-    if (keys.ArrowDown || keys.KeyS) thr -= 1;
+    if (keys.ArrowUp || keys.KeyW) climb += 1;
+    if (keys.ArrowDown || keys.KeyS) climb -= 1;
+    if (keys.KeyE) thr += 1;
+    if (keys.KeyQ) thr -= 1;
   }
   p.bank += (turn - p.bank) * Math.min(1, dt * 5);
   p.speed = clamp(p.speed + thr * 3.5 * dt, 4, 9.5);
@@ -958,7 +1004,10 @@ function update(dt) {
       explosion(p.x, p.y, Math.max(g, p.z), 2.5);
       state = 'over'; showGameOver();
     }
-  } else p.ang += p.bank * 1.9 * dt;
+  } else {
+    p.ang += p.bank * 1.9 * dt;
+    updateAltitude(p, climb, dt);
+  }
   p.vx = Math.cos(p.ang) * p.speed; p.vy = Math.sin(p.ang) * p.speed;
   p.x += p.vx * dt; p.y += p.vy * dt;
   traveled += p.speed * dt;
@@ -998,7 +1047,7 @@ function update(dt) {
   // Kamera
   const lead = 2.2 + p.speed * 0.25;
   const tx = p.x + Math.cos(p.ang) * lead, ty = p.y + Math.sin(p.ang) * lead;
-  const tcx = (tx - ty) * HW, tcy = (tx + ty) * HH - PZ * 0.5;
+  const tcx = (tx - ty) * HW, tcy = (tx + ty) * HH - p.z * 0.5;
   camX += (tcx - camX) * Math.min(1, dt * 3); camY += (tcy - camY) * Math.min(1, dt * 3);
   shake *= Math.pow(0.02, dt);
 
@@ -1232,7 +1281,7 @@ function drawShadows() {
   const p = plane;
   const g = groundH(p.x, p.y);
   p.shadowH += (g - p.shadowH) * 0.2;
-  if (state !== 'over') drawA10(sx(p.x, p.y), sy(p.x, p.y, p.shadowH), p.ang, p.bank, true);
+  if (state !== 'over') drawA10(sx(p.x, p.y), sy(p.x, p.y, p.shadowH), p.ang, p.pitch, -p.bank * 0.6 + (p.dying ? p.spin : 0), p.bombs, true);
   ctx.fillStyle = 'rgba(0,0,0,0.25)';
   for (const m of missiles) { const gg = groundH(m.x, m.y); ctx.beginPath(); ctx.ellipse(sx(m.x, m.y), sy(m.x, m.y, gg), 4, 2, 0, 0, TAU); ctx.fill(); }
   for (const b of bombs) { const gg = groundH(b.x, b.y); ctx.beginPath(); ctx.ellipse(sx(b.x, b.y), sy(b.x, b.y, gg), 4, 2, 0, 0, TAU); ctx.fill(); }
@@ -1243,10 +1292,11 @@ function drawReticles() {
   if (state !== 'play' || p.dying) return;
   const ca = Math.cos(p.ang), sa = Math.sin(p.ang);
   // Kanone
-  const gx = p.x + ca * GUNR, gy = p.y + sa * GUNR, gz = groundH(gx, gy);
+  const aim = gunAim();
+  const gx = p.x + ca * aim.range, gy = p.y + sa * aim.range, gz = groundH(gx, gy);
   ctx.save(); ctx.translate(sx(gx, gy), sy(gx, gy, gz)); ctx.scale(1, 0.5);
   ctx.strokeStyle = p.firing ? 'rgba(255,190,60,0.95)' : 'rgba(150,255,150,0.75)'; ctx.lineWidth = 2;
-  ctx.beginPath(); ctx.arc(0, 0, 22, 0, TAU); ctx.stroke();
+  ctx.beginPath(); ctx.arc(0, 0, 10 + aim.spread * 30, 0, TAU); ctx.stroke();
   ctx.beginPath(); ctx.arc(0, 0, 3, 0, TAU); ctx.stroke();
   ctx.restore();
   // Bombe (CCIP)
@@ -1254,7 +1304,7 @@ function drawReticles() {
   const T = Math.sqrt(2 * Math.max(10, p.z - 6 - g0) / GRAV);
   const bx = p.x + p.vx * T, by = p.y + p.vy * T, bz = groundH(bx, by);
   const X = sx(bx, by), Y = sy(bx, by, bz);
-  ctx.strokeStyle = p.bombs > 0 ? 'rgba(255,120,80,0.85)' : 'rgba(255,120,80,0.3)'; ctx.lineWidth = 2;
+  ctx.strokeStyle = p.bombs <= 0 ? 'rgba(255,120,80,0.3)' : (p.z - g0 < 90 ? 'rgba(255,40,40,0.95)' : 'rgba(255,120,80,0.85)'); ctx.lineWidth = 2;
   ctx.beginPath();
   ctx.moveTo(X - 18, Y); ctx.lineTo(X - 6, Y); ctx.moveTo(X + 6, Y); ctx.lineTo(X + 18, Y);
   ctx.moveTo(X, Y - 9); ctx.lineTo(X, Y - 3); ctx.moveTo(X, Y + 3); ctx.lineTo(X, Y + 9);
@@ -1311,74 +1361,157 @@ function drawAir() {
 function drawPlane() {
   const p = plane;
   const X = sx(p.x, p.y), Y = sy(p.x, p.y, p.z);
-  drawA10(X, Y, p.ang + (p.dying ? Math.sin(p.spin) * 0.5 : 0), p.bank, false);
+  // Höhenlinie zum Schatten
+  const SX = sx(p.x, p.y), SY = sy(p.x, p.y, p.shadowH);
+  ctx.save(); ctx.setLineDash([3, 6]); ctx.strokeStyle = 'rgba(255,255,255,0.22)'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(X, Y + 6); ctx.lineTo(SX, SY); ctx.stroke(); ctx.restore();
+  const roll = -p.bank * 0.6 + (p.dying ? p.spin : 0);
+  drawA10(X, Y, p.ang, p.pitch, roll, p.bombs, false);
+  const tmp = [0, 0, 0];
   if (p.firing) {
-    const nx = p.x + Math.cos(p.ang) * 1.05, ny = p.y + Math.sin(p.ang) * 1.05;
-    const fx = sx(nx, ny), fy = sy(nx, ny, p.z - 3);
-    const gr = ctx.createRadialGradient(fx, fy, 0, fx, fy, 16);
+    xf3(1.16, 0, -0.035, tmp);
+    const fx = XF.X + (tmp[0] - tmp[1]) * HW, fy = XF.Y + (tmp[0] + tmp[1]) * HH - tmp[2] * VZ;
+    const gr = ctx.createRadialGradient(fx, fy, 0, fx, fy, 18);
     gr.addColorStop(0, 'rgba(255,255,220,1)'); gr.addColorStop(0.4, 'rgba(255,170,50,0.8)'); gr.addColorStop(1, 'rgba(255,100,0,0)');
-    ctx.fillStyle = gr; ctx.beginPath(); ctx.arc(fx, fy, 10 + rnd() * 8, 0, TAU); ctx.fill();
+    ctx.fillStyle = gr; ctx.beginPath(); ctx.arc(fx, fy, 10 + rnd() * 9, 0, TAU); ctx.fill();
+  }
+  // Positionslichter
+  if ((time * 1.5 % 1) < 0.15) {
+    for (const [s, col] of [[-1, '#ff3030'], [1, '#30ff40']]) {
+      xf3(-0.03, s * 0.99, 0.0, tmp);
+      ctx.fillStyle = col; ctx.beginPath(); ctx.arc(XF.X + (tmp[0] - tmp[1]) * HW, XF.Y + (tmp[0] + tmp[1]) * HH - tmp[2] * VZ, 2.5, 0, TAU); ctx.fill();
+    }
   }
 }
 
-// A-10 Draufsicht in Weltkoordinaten (Nase zeigt +x), isometrisch projiziert
-function drawA10(X, Y, ang, bank, shadow) {
-  const S = 1.2, squash = 1 - Math.abs(bank) * 0.18;
-  ctx.save(); ctx.translate(X, Y); ctx.transform(HW, HH, -HW, HH, 0, 0); ctx.rotate(ang); ctx.scale(S, S * squash);
-  const body = shadow ? 'rgba(0,0,0,0.28)' : '#7f888e';
-  const dark = shadow ? 'rgba(0,0,0,0)' : '#5d666b';
-  const light = shadow ? 'rgba(0,0,0,0)' : '#9aa3a8';
-  // Tragflächen (gerade, breit)
-  ctx.fillStyle = body;
-  poly([[0.2, 0.08], [0.08, 0.98], [-0.13, 0.98], [-0.2, 0.08], [-0.2, -0.08], [-0.13, -0.98], [0.08, -0.98], [0.2, -0.08]]);
-  // Höhenleitwerk
-  poly([[-0.64, 0.06], [-0.72, 0.44], [-0.86, 0.44], [-0.86, -0.44], [-0.72, -0.44], [-0.64, -0.06]]);
+// ---------------------------------------------------------------------
+//  A-10 Thunderbolt II als Low-Poly-3D-Modell
+//  Modellkoordinaten: x = vorn, y = rechte Tragfläche, z = oben (Tile-Einheiten)
+// ---------------------------------------------------------------------
+const VZ = 30, PS = 1.3;
+const A10_GRAY = [128, 137, 143], A10_GRAY2 = [108, 117, 123], A10_ENG = [120, 128, 134];
+const A10_GLASS = [34, 56, 78], A10_DARK = [34, 36, 38], A10_BOMB = [72, 78, 54];
+const A10M = (() => {
+  const F = [];
+  const face = (v, col, tag, gloss) => F.push({ v, col, tag, gloss });
+  const mirror = pts => pts.map(p => [p[0], -p[1], p[2]]);
+  // Rotationskörper entlang x. sec = [x, halbe Breite, halbe Höhe, z-Mitte, y-Mitte]
+  function loft(secs, n, col, capCol, tag, gloss) {
+    const rings = secs.map(([x, w, h, zc, yc = 0]) => {
+      const r = [];
+      for (let k = 0; k < n; k++) { const a = k / n * TAU + Math.PI / n; r.push([x, yc + Math.cos(a) * w, zc + Math.sin(a) * h]); }
+      return r;
+    });
+    for (let s = 0; s < rings.length - 1; s++) for (let k = 0; k < n; k++) {
+      const k2 = (k + 1) % n;
+      face([rings[s][k], rings[s][k2], rings[s + 1][k2], rings[s + 1][k]], col, tag, gloss);
+    }
+    face(rings[0].slice(), capCol || col, tag); face(rings[rings.length - 1].slice(), capCol || col, tag);
+  }
+  // Flache Platte (Tragfläche, Leitwerk): Polygon in 3D, Dicke in z
+  function slab(pts, t, col, tag) {
+    const top = pts.map(p => [p[0], p[1], p[2] + t / 2]), bot = pts.map(p => [p[0], p[1], p[2] - t / 2]);
+    face(top, col, tag); face(bot, col, tag);
+    for (let i = 0; i < pts.length; i++) { const j = (i + 1) % pts.length; face([top[i], top[j], bot[j], bot[i]], col, tag); }
+  }
+  // Senkrechte Platte (Seitenleitwerk): Polygon in (x,z) bei y, Dicke in y
+  function vslab(pts, y, t, col) {
+    const a = pts.map(p => [p[0], y - t / 2, p[1]]), b = pts.map(p => [p[0], y + t / 2, p[1]]);
+    face(a, col); face(b, col);
+    for (let i = 0; i < pts.length; i++) { const j = (i + 1) % pts.length; face([a[i], a[j], b[j], b[i]], col); }
+  }
   // Rumpf
-  poly([[0.98, 0], [0.9, 0.07], [0.55, 0.1], [-0.82, 0.07], [-0.88, 0], [-0.82, -0.07], [0.55, -0.1], [0.9, -0.07]]);
-  if (!shadow) {
-    // Flügel-Schattierung
-    ctx.fillStyle = light; poly([[0.2, 0.08], [0.08, 0.98], [0.02, 0.98], [0.12, 0.08]]); poly([[0.2, -0.08], [0.08, -0.98], [0.02, -0.98], [0.12, -0.08]]);
-    ctx.fillStyle = dark; ctx.fillRect(-0.15, 0.85, 0.2, 0.13); ctx.fillRect(-0.15, -0.98, 0.2, 0.13);
-    // Bomben unter den Flügeln
-    ctx.fillStyle = '#3a3f2c';
-    for (let i = 0; i < plane.bombs && i < 6; i++) {
-      const side = i % 2 ? 1 : -1, row = (i >> 1);
-      ctx.fillRect(-0.12, side * (0.28 + row * 0.18) - 0.035, 0.26, 0.07);
-    }
-    // Cockpit
-    ctx.fillStyle = '#26394a'; ctx.beginPath(); ctx.ellipse(0.62, 0, 0.12, 0.055, 0, 0, TAU); ctx.fill();
-    ctx.fillStyle = 'rgba(200,230,255,0.6)'; ctx.beginPath(); ctx.ellipse(0.66, -0.015, 0.05, 0.02, 0, 0, TAU); ctx.fill();
-    // Kanone
-    ctx.fillStyle = '#2a2a2a'; ctx.fillRect(0.95, -0.015, 0.08, 0.03);
-    // Haifischmaul-Andeutung
-    ctx.fillStyle = '#b33'; ctx.fillRect(0.82, -0.06, 0.05, 0.12);
-  }
-  // Triebwerke
-  ctx.fillStyle = shadow ? body : '#666e73';
-  ctx.beginPath(); ctx.ellipse(-0.45, 0.2, 0.17, 0.085, 0, 0, TAU); ctx.fill();
-  ctx.beginPath(); ctx.ellipse(-0.45, -0.2, 0.17, 0.085, 0, 0, TAU); ctx.fill();
-  if (!shadow) {
-    ctx.fillStyle = '#222'; ctx.beginPath(); ctx.ellipse(-0.3, 0.2, 0.03, 0.07, 0, 0, TAU); ctx.fill(); ctx.beginPath(); ctx.ellipse(-0.3, -0.2, 0.03, 0.07, 0, 0, TAU); ctx.fill();
-    // Positionslichter
-    if ((time * 1.5 % 1) < 0.15) {
-      ctx.fillStyle = '#f33'; ctx.beginPath(); ctx.arc(-0.03, -0.98, 0.04, 0, TAU); ctx.fill();
-      ctx.fillStyle = '#3f3'; ctx.beginPath(); ctx.arc(-0.03, 0.98, 0.04, 0, TAU); ctx.fill();
-    }
-  }
-  ctx.restore();
-  // Doppelte Seitenleitwerke (vertikal)
-  const ca = Math.cos(ang), sa = Math.sin(ang);
-  const pt = (u, v) => { const wx = (u * ca - v * squash * sa) * S, wy = (u * sa + v * squash * ca) * S; return [X + (wx - wy) * HW, Y + (wx + wy) * HH]; };
-  ctx.fillStyle = shadow ? 'rgba(0,0,0,0.22)' : '#6c757a';
+  loft([[1.06, 0.012, 0.012, -0.025], [0.97, 0.055, 0.055, -0.015], [0.84, 0.085, 0.085, -0.005], [0.62, 0.1, 0.105, 0.005],
+        [0.25, 0.108, 0.112, 0.01], [-0.2, 0.09, 0.1, 0.02], [-0.6, 0.055, 0.075, 0.035], [-0.92, 0.028, 0.045, 0.05]], 8, A10_GRAY);
+  // Cockpithaube
+  loft([[0.8, 0.015, 0.015, 0.085], [0.72, 0.055, 0.06, 0.1], [0.58, 0.062, 0.075, 0.105], [0.44, 0.035, 0.045, 0.095]], 8, A10_GLASS, null, undefined, true);
+  // Kanone GAU-8
+  loft([[1.16, 0.013, 0.013, -0.035], [1.0, 0.016, 0.016, -0.035]], 6, A10_DARK);
+  // Tragflächen (gerade, innen + außen mit leichter V-Stellung)
+  const wIn = [[0.21, 0.08, -0.045], [0.14, 0.52, -0.04], [-0.17, 0.52, -0.04], [-0.21, 0.08, -0.045]];
+  const wOut = [[0.14, 0.52, -0.04], [0.08, 0.99, 0.02], [-0.12, 0.99, 0.02], [-0.17, 0.52, -0.04]];
+  slab(wIn, 0.04, A10_GRAY); slab(mirror(wIn), 0.04, A10_GRAY);
+  slab(wOut, 0.03, A10_GRAY2); slab(mirror(wOut), 0.03, A10_GRAY2);
+  // Fahrwerksgondeln unter den Flügeln
+  const pod = [[0.3, 0.27, -0.08], [0.3, 0.36, -0.08], [-0.06, 0.36, -0.08], [-0.06, 0.27, -0.08]];
+  slab(pod, 0.06, A10_GRAY2); slab(mirror(pod), 0.06, A10_GRAY2);
+  // Triebwerksträger + Triebwerke (hoch am Heck)
+  const pyl = [[-0.3, 0.07, 0.115], [-0.3, 0.13, 0.13], [-0.54, 0.13, 0.13], [-0.54, 0.07, 0.115]];
+  slab(pyl, 0.05, A10_GRAY2); slab(mirror(pyl), 0.05, A10_GRAY2);
   for (const s of [-1, 1]) {
-    const a = pt(-0.7, s * 0.44), b = pt(-0.88, s * 0.44);
-    if (shadow) {
-      // Schatten der Leitwerke flach nach rechts unten
-      ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.lineTo(b[0] + 8, b[1] + 3); ctx.lineTo(a[0] + 6, a[1] + 3); ctx.closePath(); ctx.fill();
-    } else {
-      ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.lineTo(b[0], b[1] - 15); ctx.lineTo(a[0], a[1] - 11); ctx.closePath(); ctx.fill();
-      ctx.strokeStyle = '#4c5458'; ctx.lineWidth = 1; ctx.stroke();
+    loft([[-0.2, 0.065, 0.065, 0.18, s * 0.2], [-0.25, 0.092, 0.092, 0.18, s * 0.2], [-0.52, 0.092, 0.092, 0.18, s * 0.2], [-0.66, 0.062, 0.062, 0.18, s * 0.2]], 10, A10_ENG, A10_DARK);
+  }
+  // Höhenleitwerk
+  slab([[-0.66, -0.45, 0.06], [-0.66, 0.45, 0.06], [-0.87, 0.45, 0.06], [-0.87, -0.45, 0.06]], 0.025, A10_GRAY);
+  // Doppelte Seitenleitwerke
+  for (const s of [-1, 1]) vslab([[-0.68, -0.08], [-0.9, -0.08], [-0.94, 0.31], [-0.75, 0.31]], s * 0.45, 0.025, A10_GRAY2);
+  // Mk-82 an den Flügelstationen (Tag = Bombenindex)
+  for (let i = 0; i < 6; i++) {
+    const side = i % 2 ? 1 : -1, yb = side * (0.46 + (i >> 1) * 0.16);
+    loft([[0.2, 0.006, 0.006, -0.115, yb], [0.13, 0.034, 0.034, -0.115, yb], [-0.07, 0.034, 0.034, -0.115, yb], [-0.14, 0.014, 0.014, -0.115, yb]], 6, A10_BOMB, null, i);
+  }
+  return F;
+})();
+
+let XF = null;
+const LX = -0.52, LY = -0.18, LZ = 0.83;           // Sonnenrichtung
+function xf3(x, y, z, out) {
+  const y2 = y * XF.cr - z * XF.sr, z2 = y * XF.sr + z * XF.cr;
+  const x3 = x * XF.cp - z2 * XF.sp, z3 = x * XF.sp + z2 * XF.cp;
+  out[0] = (x3 * XF.ca - y2 * XF.sa) * PS; out[1] = (x3 * XF.sa + y2 * XF.ca) * PS; out[2] = z3 * PS;
+  return out;
+}
+const shadowCv = document.createElement('canvas');
+function drawA10(X, Y, ang, pitch, roll, bombsLeft, shadow) {
+  XF = { X, Y, ca: Math.cos(ang), sa: Math.sin(ang), cp: Math.cos(pitch), sp: Math.sin(pitch), cr: Math.cos(roll), sr: Math.sin(roll) };
+  const faces = [];
+  for (const f of A10M) {
+    if (f.tag !== undefined && f.tag >= bombsLeft) continue;
+    const n = f.v.length, w = new Array(n);
+    let d = 0;
+    for (let i = 0; i < n; i++) { const v = f.v[i]; const o = xf3(v[0], v[1], v[2], [0, 0, 0]); w[i] = o; d += 0.612 * (o[0] + o[1]) + 0.5 * o[2]; }
+    let shade = 1;
+    if (!shadow) {
+      const a = w[0], b = w[1], c = w[n > 3 ? 2 : 2];
+      let ax = b[0] - a[0], ay = b[1] - a[1], az = b[2] - a[2], bx = c[0] - a[0], by = c[1] - a[1], bz = c[2] - a[2];
+      let nx = ay * bz - az * by, ny = az * bx - ax * bz, nz = ax * by - ay * bx;
+      let len = Math.hypot(nx, ny, nz);
+      if (len < 1e-9 && n > 3) {
+        const e = w[3]; bx = e[0] - a[0]; by = e[1] - a[1]; bz = e[2] - a[2];
+        nx = ay * bz - az * by; ny = az * bx - ax * bz; nz = ax * by - ay * bx; len = Math.hypot(nx, ny, nz);
+      }
+      if (len < 1e-9) len = 1;
+      nx /= len; ny /= len; nz /= len;
+      if (nx * 0.612 + ny * 0.612 + nz * 0.5 < 0) { nx = -nx; ny = -ny; nz = -nz; }
+      const lit = Math.max(0, nx * LX + ny * LY + nz * LZ);
+      shade = 0.42 + 0.72 * lit + (f.gloss ? Math.pow(lit, 6) * 1.2 : 0);
     }
+    faces.push({ w, d: d / n, shade, col: f.col });
+  }
+  if (shadow) {
+    // Silhouette auf den Boden projiziert, einmal deckend gezeichnet und dann transparent übernommen
+    const SW = 260, SH = 160;
+    if (shadowCv.width !== Math.ceil(SW * RS)) { shadowCv.width = Math.ceil(SW * RS); shadowCv.height = Math.ceil(SH * RS); }
+    const g = shadowCv.getContext('2d');
+    g.setTransform(1, 0, 0, 1, 0, 0); g.clearRect(0, 0, shadowCv.width, shadowCv.height);
+    g.setTransform(RS, 0, 0, RS, SW / 2 * RS, SH / 2 * RS);
+    g.fillStyle = '#000';
+    for (const f of faces) {
+      g.beginPath();
+      for (let i = 0; i < f.w.length; i++) { const o = f.w[i], px = (o[0] - o[1]) * HW, py = (o[0] + o[1]) * HH; i ? g.lineTo(px, py) : g.moveTo(px, py); }
+      g.closePath(); g.fill();
+    }
+    ctx.globalAlpha = 0.28; ctx.drawImage(shadowCv, X - SW / 2, Y - SH / 2, SW, SH); ctx.globalAlpha = 1;
+    return;
+  }
+  faces.sort((a, b) => a.d - b.d);
+  ctx.lineJoin = 'round'; ctx.lineWidth = 0.7;
+  for (const f of faces) {
+    ctx.beginPath();
+    for (let i = 0; i < f.w.length; i++) { const o = f.w[i], px = X + (o[0] - o[1]) * HW, py = Y + (o[0] + o[1]) * HH - o[2] * VZ; i ? ctx.lineTo(px, py) : ctx.moveTo(px, py); }
+    ctx.closePath();
+    const c = rgb(f.col, f.shade);
+    ctx.fillStyle = c; ctx.strokeStyle = c; ctx.fill(); ctx.stroke();
   }
 }
 
@@ -1511,6 +1644,16 @@ function drawHUD() {
   // Systeme
   const bx = 14, by = H - 150;
   ctx.fillStyle = 'rgba(10,14,8,0.55)'; ctx.fillRect(bx, by, 250, 136);
+  // Höhenmesser
+  const agl = Math.max(0, p.z - groundH(p.x, p.y)), ax = bx + 262, ay = H - 150;
+  ctx.fillStyle = 'rgba(10,14,8,0.55)'; ctx.fillRect(ax, ay, 64, 136);
+  ctx.fillStyle = 'rgba(0,0,0,0.5)'; ctx.fillRect(ax + 10, ay + 22, 14, 104);
+  const af = clamp(p.z / MAXZ, 0, 1), cf = clamp(p.alt / MAXZ, 0, 1);
+  ctx.fillStyle = p.terrainWarn ? '#e8c440' : '#6fb3e0'; ctx.fillRect(ax + 12, ay + 124 - 100 * af, 10, 100 * af);
+  ctx.fillStyle = '#fff'; ctx.fillRect(ax + 6, ay + 124 - 100 * cf, 22, 2);
+  ctx.fillStyle = '#d8e8c8'; ctx.font = '11px ui-monospace,Menlo,monospace';
+  ctx.fillText('HÖHE', ax + 10, ay + 14);
+  ctx.fillText(Math.round(agl * 0.5) + 'm', ax + 28, ay + 124 - 100 * af + 4);
   const hpc = p.hp > 50 ? '#7ccf5a' : p.hp > 25 ? '#e8c440' : '#e8503a';
   bar(bx + 12, by + 22, 226, 12, p.hp / 100, hpc, 'STRUKTUR', Math.ceil(p.hp) + '%');
   bar(bx + 12, by + 56, 226, 12, p.ammo / MAXAMMO, '#e8b040', 'GAU-8 30mm', Math.floor(p.ammo));
@@ -1533,11 +1676,12 @@ function drawHUD() {
     ctx.fillStyle = '#ff3b2f'; ctx.fillText('⚠ RAKETE – FLARES [F]', W / 2, 70);
   }
   if (p.ammo < 1 && (keys.Space || mouseGun)) { ctx.font = '20px Impact, sans-serif'; ctx.fillStyle = '#ffb238'; ctx.fillText('MUNITION LEER', W / 2, 104); }
+  if (p.terrainWarn && !p.dying) { ctx.font = '18px Impact, sans-serif'; ctx.fillStyle = '#e8c440'; ctx.fillText('GELÄNDE – AUTOMATISCHES HOCHZIEHEN', W / 2, 156); }
   if (p.hp < 25 && (time * 2 % 1) < 0.5) { ctx.font = '20px Impact, sans-serif'; ctx.fillStyle = '#ff6b5a'; ctx.fillText('SCHWERE SCHÄDEN', W / 2, 130); }
   if (hintT > 0) {
     ctx.globalAlpha = Math.min(1, hintT / 2);
     ctx.font = '14px ui-monospace,Menlo,monospace'; ctx.fillStyle = '#e8eadf';
-    ctx.fillText('← → steuern · ↑ ↓ Schub · LEERTASTE Kanone · B Bombe · F Flares', W / 2, H - 28);
+    ctx.fillText('← → steuern · ↑ ↓ Höhe · E/Q Schub · LEERTASTE Kanone · B Bombe · F Flares', W / 2, H - 28);
     ctx.globalAlpha = 1;
   }
   ctx.textAlign = 'left';
