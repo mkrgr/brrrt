@@ -44,7 +44,7 @@
     <div class="tips">
       Die Welt wird bei jedem Start neu generiert: Meer, Strände, Wiesen, Wälder, Wüsten, Berge und Städte.<br>
       Tief fliegen macht die Kanone präzise, aber Flak gefährlicher. Hoch fliegen schützt vor Flak, aber nicht vor SAMs.
-      Unter ~35&nbsp;m kann dich keine SAM erfassen. Das Gelände wird automatisch überflogen.<br>
+      Unter ~35&nbsp;m kann dich keine SAM erfassen – aber Vorsicht: Berge, Bäume und Hochhäuser bringen dich zum Absturz.<br>
       Der kleine Kreis vor dir zeigt, wo die Kanone trifft, das Fadenkreuz dahinter den Bombeneinschlag.<br>
       <b style="color:#ff6b5a">SAM-Stellungen</b> feuern Lenkraketen – wirf Flares und kurve hart. Flak-Panzer schießen Sperrfeuer.<br>
       Zerstörte LKWs lassen manchmal <b style="color:#7dff8a">Reparaturkisten</b> fallen. Überfliege sie.
@@ -55,7 +55,7 @@
 
 <div id="over" class="overlay hidden">
   <div class="panel" style="text-align:center">
-    <h1 class="big">ABGESCHOSSEN</h1>
+    <h1 class="big" id="overTitle">ABGESCHOSSEN</h1>
     <div class="stats" id="overStats"></div>
     <button id="restartBtn">NEUE WELT</button>
   </div>
@@ -955,25 +955,46 @@ function obstacleH(x, y) {
 }
 function updateAltitude(p, climb, dt) {
   const ca = Math.cos(p.ang), sa = Math.sin(p.ang), px = -sa, py = ca;
-  // unter dem Flugzeug, inkl. Tragflächenspitzen
-  let floorHere = 0;
-  for (const o of [0, -0.9, 0.9]) floorHere = Math.max(floorHere, obstacleH(p.x + px * o, p.y + py * o));
-  floorHere += MINCLR;
-  // Vorausschau: rechtzeitig steigen
-  let floorAhead = floorHere;
-  for (let k = 1; k <= 9; k++) {
-    const dd = k * 0.8, need = obstacleH(p.x + ca * dd, p.y + sa * dd) + MINCLR - dd / p.speed * 210;
-    if (need > floorAhead) floorAhead = need;
+  // Hindernis direkt unter Rumpf und Tragflächen
+  const span = 0.75 * planeScale(p.z) / PS;
+  let obst = 0;
+  for (const o of [0, -span, span]) obst = Math.max(obst, obstacleH(p.x + px * o, p.y + py * o));
+  if (p.demo) {
+    // Titel-Demo fliegt automatisch über das Gelände
+    let floor = obst + MINCLR;
+    for (let k = 1; k <= 9; k++) { const dd = k * 0.8; floor = Math.max(floor, obstacleH(p.x + ca * dd, p.y + sa * dd) + MINCLR - dd / p.speed * 210); }
+    p.alt = Math.max(p.alt, floor);
+  } else {
+    p.alt = clamp(p.alt + climb * 140 * dt, 0, MAXZ);
   }
-  p.alt = clamp(p.alt + climb * 140 * dt, floorHere, MAXZ);
-  const target = Math.max(p.alt, floorAhead);
-  const oldZ = p.z, rate = target > p.z ? 260 : 170;
-  p.z += clamp(target - p.z, -rate * dt, rate * dt);
-  if (p.z < floorHere) p.z = floorHere;        // niemals in den Boden
+  const oldZ = p.z, rate = p.alt > p.z ? 260 : 170;
+  p.z += clamp(p.alt - p.z, -rate * dt, rate * dt);
   p.vz = lerp(p.vz, (p.z - oldZ) / Math.max(dt, 1e-3), Math.min(1, dt * 6));
   p.pitch = clamp(p.vz / 420, -0.32, 0.32);
-  p.terrainWarn = floorAhead > p.alt + 8;
-  p.agl = p.z - groundH(p.x, p.y);
+  // Bodenannäherungswarnung: kollidiert der aktuelle Kurs in den nächsten ~1,5 s?
+  let warn = obst + 22 > p.z;
+  for (let k = 1; k <= 12 && !warn; k++) {
+    const dd = k * 0.8, t = dd / p.speed;
+    if (t > 1.6) break;
+    if (obstacleH(p.x + ca * dd, p.y + sa * dd) + 10 > p.z + Math.min(0, p.vz) * t) warn = true;
+  }
+  p.terrainWarn = warn;
+  if (!p.demo && p.z <= obst + 4) crash(p);
+}
+function crash(p) {
+  p.hp = 0; p.crashed = true;
+  Snd.gun(false);
+  const g = groundH(p.x, p.y);
+  const water = tileT(p.x, p.y) <= WATER && p.z < 20;
+  if (water) for (let k = 0; k < 60; k++) addP('splash', p.x + rr(-.6, .6), p.y + rr(-.6, .6), 2, rr(-2, 2) + p.vx * 0.2, rr(-2, 2) + p.vy * 0.2, rr(80, 300), rr(1, 2), rr(3, 7));
+  explosion(p.x, p.y, Math.max(p.z, g) + 4, 2.8);
+  explosion(p.x + p.vx * 0.15, p.y + p.vy * 0.15, Math.max(p.z, g) + 4, 1.6);
+  if (!water) decals.push({ x: p.x, y: p.y, z: g, r: 1.4, type: 'crater', life: 120 });
+  damageUnits(p.x, p.y, 2.2, 20);
+  // Gebäude am Absturzort zerstören
+  locate(p.x, p.y);
+  if (LC.t[LI] === CITY && !LC.d[LI]) destroyBuilding(LC, LI, Math.floor(p.x), Math.floor(p.y));
+  state = 'over'; showGameOver();
 }
 function gunAim() {
   const agl = Math.max(20, plane.z - groundH(plane.x, plane.y));
@@ -1054,6 +1075,8 @@ function update(dt) {
   mmTimer -= dt; if (mmTimer <= 0) { mmTimer = 1.2; updateMinimap(); }
   Snd.engine(p.speed, state === 'play' || state === 'title');
   Snd.warn(p.warn && !p.dying && (time * 6 % 1) < 0.5);
+  p.gpwsT = (p.gpwsT || 0) - dt;
+  if (p.terrainWarn && !p.demo && !p.dying && state === 'play' && p.gpwsT <= 0) { p.gpwsT = 0.45; Snd.tone(620, 600, 0.18, 0.18, 'square'); }
 }
 
 // =====================================================================
@@ -1281,7 +1304,11 @@ function drawShadows() {
   const p = plane;
   const g = groundH(p.x, p.y);
   p.shadowH += (g - p.shadowH) * 0.2;
-  if (state !== 'over') drawA10(sx(p.x, p.y), sy(p.x, p.y, p.shadowH), p.ang, p.pitch, -p.bank * 0.6 + (p.dying ? p.spin : 0), p.bombs, true, PS * SHADOW_SCALE);
+  if (state !== 'over') {
+    const f = clamp((p.z - p.shadowH) / MAXZ, 0, 1);
+    shadowAlpha = 0.4 - 0.3 * f; shadowBlur = f * 3;
+    drawA10(sx(p.x, p.y), sy(p.x, p.y, p.shadowH), p.ang, p.pitch, -p.bank * 0.6 + (p.dying ? p.spin : 0), p.bombs, true, PS * SHADOW_SCALE * (1.1 - 0.55 * f));
+  }
   ctx.fillStyle = 'rgba(0,0,0,0.25)';
   for (const m of missiles) { const gg = groundH(m.x, m.y); ctx.beginPath(); ctx.ellipse(sx(m.x, m.y), sy(m.x, m.y, gg), 4, 2, 0, 0, TAU); ctx.fill(); }
   for (const b of bombs) { const gg = groundH(b.x, b.y); ctx.beginPath(); ctx.ellipse(sx(b.x, b.y), sy(b.x, b.y, gg), 4, 2, 0, 0, TAU); ctx.fill(); }
@@ -1465,6 +1492,7 @@ function xf3(x, y, z, out) {
   return out;
 }
 const shadowCv = document.createElement('canvas');
+let shadowAlpha = 0.3, shadowBlur = 0;
 function drawA10(X, Y, ang, pitch, roll, bombsLeft, shadow, scale) {
   XF = { X, Y, s: scale, ca: Math.cos(ang), sa: Math.sin(ang), cp: Math.cos(pitch), sp: Math.sin(pitch), cr: Math.cos(roll), sr: Math.sin(roll) };
   const faces = [];
@@ -1504,7 +1532,10 @@ function drawA10(X, Y, ang, pitch, roll, bombsLeft, shadow, scale) {
       for (let i = 0; i < f.w.length; i++) { const o = f.w[i], px = (o[0] - o[1]) * HW, py = (o[0] + o[1]) * HH; i ? g.lineTo(px, py) : g.moveTo(px, py); }
       g.closePath(); g.fill();
     }
-    ctx.globalAlpha = 0.28; ctx.drawImage(shadowCv, X - SW / 2, Y - SH / 2, SW, SH); ctx.globalAlpha = 1;
+    ctx.globalAlpha = shadowAlpha;
+    if (shadowBlur > 0.3) ctx.filter = `blur(${shadowBlur.toFixed(1)}px)`;
+    ctx.drawImage(shadowCv, X - SW / 2, Y - SH / 2, SW, SH);
+    ctx.filter = 'none'; ctx.globalAlpha = 1;
     return;
   }
   faces.sort((a, b) => a.d - b.d);
@@ -1679,7 +1710,7 @@ function drawHUD() {
     ctx.fillStyle = '#ff3b2f'; ctx.fillText('⚠ RAKETE – FLARES [F]', W / 2, 70);
   }
   if (p.ammo < 1 && (keys.Space || mouseGun)) { ctx.font = '20px Impact, sans-serif'; ctx.fillStyle = '#ffb238'; ctx.fillText('MUNITION LEER', W / 2, 104); }
-  if (p.terrainWarn && !p.dying) { ctx.font = '18px Impact, sans-serif'; ctx.fillStyle = '#e8c440'; ctx.fillText('GELÄNDE – AUTOMATISCHES HOCHZIEHEN', W / 2, 156); }
+  if (p.terrainWarn && !p.dying && (time * 5 % 1) < 0.6) { ctx.font = '26px Impact, sans-serif'; ctx.fillStyle = '#ff3b2f'; ctx.fillText('BODENNÄHE – HOCHZIEHEN!', W / 2, 160); }
   if (p.hp < 25 && (time * 2 % 1) < 0.5) { ctx.font = '20px Impact, sans-serif'; ctx.fillStyle = '#ff6b5a'; ctx.fillText('SCHWERE SCHÄDEN', W / 2, 130); }
   if (hintT > 0) {
     ctx.globalAlpha = Math.min(1, hintT / 2);
@@ -1697,6 +1728,7 @@ function showGameOver() {
   Snd.gun(false); Snd.warn(false);
   const best = Math.max(score, +(localStorage.getItem('a10best') || 0));
   localStorage.setItem('a10best', best);
+  document.getElementById('overTitle').textContent = plane.crashed ? 'ABGESTÜRZT' : 'ABGESCHOSSEN';
   document.getElementById('overStats').innerHTML =
     `Punkte <b>${score}</b><br>Abschüsse <b>${kills}</b><br>Flugstrecke <b>${(traveled * 0.015).toFixed(1)} km</b><br>Rekord <b>${best}</b>`;
   setTimeout(() => document.getElementById('over').classList.remove('hidden'), 900);
