@@ -783,7 +783,8 @@ const Radio = {
   log: [], busyUntil: 0, last: null, voices: [], catT: {},
   init() {
     if (!('speechSynthesis' in window)) return;
-    const load = () => { this.voices = speechSynthesis.getVoices().filter(v => /^en/i.test(v.lang)); this.assign(); };
+    // nur lokal installierte Stimmen: Online-Stimmen (z. B. "Google US English" in Chrome) senden den Text an einen Server
+    const load = () => { this.voices = speechSynthesis.getVoices().filter(v => /^en/i.test(v.lang) && v.localService); this.assign(); };
     load(); speechSynthesis.onvoiceschanged = load;
   },
   // Bewertet eine Stimme: männlich und hochwertig bevorzugt, weiblich und Effektstimmen ausgeschlossen
@@ -840,7 +841,9 @@ const Radio = {
     if (prio) speechSynthesis.cancel();
     else if (speechSynthesis.speaking || speechSynthesis.pending) return;
     const u = new SpeechSynthesisUtterance(text.replace(/\.\.\./g, ', '));
-    const v = this.voiceFor(spk); if (v) u.voice = v;
+    const v = this.voiceFor(spk);
+    if (!v) return;                      // keine lokale Stimme: nur Untertitel, kein Fallback auf eine Online-Stimme
+    u.voice = v;
     u.lang = v ? v.lang : 'en-US';
     u.rate = spk === GPWS ? 0.95 : 1.08; u.pitch = RADIO_PITCH[spk]; u.volume = 0.9;
     if (spk !== GPWS) { u.onstart = () => Snd.radioClick(false); u.onend = () => Snd.radioClick(true); }
@@ -892,8 +895,8 @@ const UDEF = {
 
 function difficulty() { return 1 + time / 110 + traveled / 450; }
 
-function newWorld(demo) {
-  SEED = (Math.random() * 1e9) | 0;
+function newWorld(demo, seed) {
+  SEED = seed ?? ((Math.random() * 1e9) | 0);
   chunks = new Map(); lastCK = NaN; lastC = null;
   for (const c of rendered) { if (c.canvas) canvasPool.push(c.canvas); c.canvas = null; }
   rendered.clear();
@@ -2489,12 +2492,91 @@ canvas.addEventListener('mousedown', e => { if (state !== 'play') return; if (e.
 addEventListener('mouseup', e => { if (e.button === 0) mouseGun = false; });
 canvas.addEventListener('contextmenu', e => e.preventDefault());
 
+// =====================================================================
+//  Screenshot-Modus für die Dokumentation: index.html#shot=<szene>
+//  Baut eine feste Szene auf, simuliert kurz und friert das Bild ein.
+//  Szenen: title, combat, canyon, mountains, volcano, city, sea
+// =====================================================================
+const SHOT = typeof location !== 'undefined' ? new URLSearchParams(location.hash.slice(1)).get('shot') : null;
+let shotFrozen = false;
+function findTile(test, cx, cy, maxR = 700, step = 3) {
+  for (let r = 0; r < maxR; r += step) for (let a = 0; a < Math.max(1, r * 2); a++) {
+    const ang = a / Math.max(1, r * 2) * TAU, x = Math.round(cx + Math.cos(ang) * r), y = Math.round(cy + Math.sin(ang) * r);
+    if (test(tileInfo(x, y), x, y)) return [x + 0.5, y + 0.5];
+  }
+  return null;
+}
+function placePlane(x, y, z, ang) {
+  plane.x = x; plane.y = y; plane.z = plane.alt = z; plane.ang = ang; plane.bank = 0;
+  camX = (x + Math.cos(ang) * 3.8 - y - Math.sin(ang) * 3.8) * HW; camY = (x + Math.cos(ang) * 3.8 + y + Math.sin(ang) * 3.8) * HH - z * 0.5;
+  units = units.filter(u => Math.hypot(u.x - x, u.y - y) > 3);
+}
+function simulate(seconds, each) {
+  for (let i = 0; i < seconds * 60; i++) { plane.hp = 100; if (each) each(i); update(1 / 60); }
+}
+function setupShot(scene) {
+  document.getElementById('title').classList.add('hidden');
+  if (scene === 'title') { newWorld(true, 4242); simulate(4); document.getElementById('title').classList.remove('hidden'); }
+  else {
+    newWorld(false, 4242); state = 'play'; hintT = 0;
+    const p = plane;
+    if (scene === 'combat') {
+      const pos = findTile(i => i.t === GRASS, p.x, p.y);
+      const ang = -Math.PI * 0.75 + 0.5;
+      placePlane(pos[0], pos[1], 200, ang);
+      const aim = gunAim(), ax = p.x + Math.cos(ang) * aim.range, ay = p.y + Math.sin(ang) * aim.range;
+      for (let k = -2; k <= 2; k++) addUnit(k === 2 ? 'aaa' : 'tank', ax + Math.cos(ang + 1.4) * k * 0.9, ay + Math.sin(ang + 1.4) * k * 0.9, ang + 1.4);
+      addUnit('sam', ax + Math.cos(ang) * 6, ay + Math.sin(ang) * 6);
+      for (let k = 0; k < 3; k++) addUnit('truck', ax + Math.cos(ang) * (9 + k), ay + Math.sin(ang) * (9 + k) + 1, ang);
+      keys.Space = true;
+      simulate(1.6, i => { if (i === 10) dropBomb(); if (i === 40) dropBomb(); });
+      keys.Space = true;
+    } else if (scene === 'canyon') {
+      const pos = findTile((i, x, y) => i.br && i.bz - i.h > 50, p.x, p.y, 900, 2);
+      locate(pos[0], pos[1]); const along = LC.br[LI] === 1;
+      placePlane(pos[0] - (along ? 0 : 3.5), pos[1] - (along ? 3.5 : 0), 60, along ? Math.PI / 2 : 0);
+      simulate(0.3);
+    } else if (scene === 'mountains') {
+      const pos = findTile(i => i.h >= 240, p.x, p.y, 900, 3);
+      placePlane(pos[0] + 7, pos[1] + 7, 330, -Math.PI * 0.75);
+      simulate(0.5);
+    } else if (scene === 'volcano') {
+      let v = null;
+      for (let r = 0; r < 1500 && !v; r += 40) v = volcanoesNear(p.x + r, p.y + r * 0.3, 160)[0];
+      placePlane(v.x + 13, v.y + 13, 360, -Math.PI * 0.75);
+      simulate(2);
+      volcanoState.get(v.id).next = time;
+      simulate(1.2);
+    } else if (scene === 'city') {
+      const pos = findTile((i, x, y) => i.br && i.t === STREAM && urban(x, y) > CITYT + 0.03, p.x, p.y, 900, 1);
+      placePlane(pos[0] + 2, pos[1] + 2, 230, -Math.PI * 0.75 + 0.4);
+      simulate(1.5);
+    } else if (scene === 'sea') {
+      const pos = findTile((i, x, y) => i.t === DEEP && tileInfo(x + 6, y + 6).t === DEEP && tileInfo(x - 6, y - 6).t === DEEP, p.x, p.y);
+      placePlane(pos[0], pos[1], 240, -Math.PI * 0.75);
+      const ax = p.x - 4, ay = p.y - 4;
+      addUnit('frigate', ax, ay - 2, 0.6); addUnit('cargo', ax + 3, ay - 5, 0.6); addUnit('tanker', ax - 4, ay + 1, 0.6); addUnit('boat', ax + 2, ay + 1, 2.2);
+      simulate(1);
+    }
+  }
+  frameNo = 0;            // alle sichtbaren Chunks sofort zeichnen
+  render(); render();
+  shotFrozen = true;
+  // Headless-Chrome übernimmt Canvas-Inhalte nicht zuverlässig in Screenshots:
+  // das fertige Bild daher als normales <img> unter die Overlays legen
+  const img = document.createElement('img');
+  img.src = canvas.toDataURL('image/png');
+  img.style.cssText = 'position:fixed;inset:0;width:100%;height:100%;z-index:1';
+  document.body.appendChild(img);
+}
+
 resize();
-newWorld(true);
+if (SHOT) setupShot(SHOT); else newWorld(true);
 let last = performance.now();
 function frame(now) {
   requestAnimationFrame(frame);
   const dt = Math.min(0.05, (now - last) / 1000); last = now;
+  if (shotFrozen) return;
   if (state === 'play' || state === 'title') update(dt);
   else if (state === 'over') { updParticles(dt); updClouds(dt); shake *= Math.pow(0.02, dt); }
   render();
