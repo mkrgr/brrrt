@@ -1,5 +1,7 @@
 # A10 BRRRT
 
+[Play in Browser](https://mkrgr.github.io/brrrt/)
+
 Isometrisches Browserspiel: Du fliegst eine **A-10 Thunderbolt II** über eine zufällig generierte, endlose Welt und bekämpfst Bodenziele mit der GAU-8-Kanone und Mk-82-Bomben, während dich Flak, Lenkraketen und gelegentlich ein Vulkan vom Himmel holen wollen.
 
 ![Gefecht: Kanone, Bombentreffer, Funkverkehr](docs/screenshots/combat.png)
