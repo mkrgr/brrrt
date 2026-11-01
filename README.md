@@ -32,6 +32,22 @@ Läuft in aktuellen Versionen von Chrome, Edge, Firefox und Safari. Ton und Funk
 
 Der grüne Kreis vor dem Flugzeug zeigt den Treffpunkt der Kanone, das rote Fadenkreuz den Einschlag der Bomben. Beide wandern mit der Flughöhe.
 
+### iPad und Touch
+
+![Touch-Steuerung auf dem iPad](docs/screenshots/touch.png)
+
+Auf Touch-Geräten erscheint die Touch-Steuerung automatisch:
+
+| Bedienelement | Aktion |
+|---|---|
+| Joystick links unten | analog: links/rechts = Kurve, hoch/runter = Steigen/Sinken |
+| **BRRRT** (rechts unten, halten) | GAU-8 Kanone |
+| **BOMBE** / **FLARES** (tippen) | Bombe abwerfen / Täuschkörper; Flares blinken bei Raketenwarnung |
+| **+ / −** (halten) | Schub erhöhen / drosseln |
+| **II** / **TON** (oben) | Pause / Ton und Funk an/aus |
+
+Multitouch funktioniert: lenken und gleichzeitig feuern. Der Joystick reagiert auf Berührungen im ganzen linken unteren Bereich. In der Pause genügt ein Tippen zum Fortsetzen, und beim Wechsel in eine andere App pausiert das Spiel automatisch. Spielbar im Quer- und im Hochformat. Am besten über den Link oben spielen oder die Seite in Safari zum Home-Bildschirm hinzufügen.
+
 ## Die Welt
 
 Jeder Start erzeugt eine neue, unendlich große Welt aus Rauschfunktionen: Meer mit Inseln, Strände, Wiesen, Wälder, Wüsten, Städte mit Straßennetz und Hochhäusern, Flüsse mit Brücken, Hochgebirge mit Schneegipfeln, rote Canyonlands und aktive Vulkane.
@@ -83,7 +99,7 @@ Schnelle Abschussserien geben einen Kombo-Multiplikator bis ×5. Die Schwierigke
 
 ## Screenshots neu erzeugen
 
-Das Spiel hat einen Screenshot-Modus: `index.html#shot=<szene>` baut eine feste Szene mit festem Seed auf und friert das Bild ein. Szenen: `title`, `combat`, `canyon`, `mountains`, `volcano`, `city`, `sea`.
+Das Spiel hat einen Screenshot-Modus: `index.html#shot=<szene>` baut eine feste Szene mit festem Seed auf und friert das Bild ein. Szenen: `title`, `combat`, `canyon`, `mountains`, `volcano`, `city`, `sea` und `touch` (Touch-Bedienung in iPad-Größe 1180×820).
 
 ```bash
 bash tools/screenshots.sh           # alle Szenen nach docs/screenshots/
